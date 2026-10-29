@@ -1,0 +1,18 @@
+name: P27Sougen
+version: '${version}'
+main: com.gmail.necnionch.myplugin.p27sougen.bukkit.SougenPlugin
+api-version: '1.21'
+authors: [ Necnion8, The First Architect ]
+description: 「あの頃の想いを、再び具現化する。」
+website: https://github.com/Necnion8/P27Sougen
+
+depend:
+  - WorldEdit
+
+commands:
+  sougen:
+    permission: p27sougen.command.sougen
+
+permissions:
+  sougen.command.sougen:
+    default: op
