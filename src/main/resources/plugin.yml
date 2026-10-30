@@ -8,6 +8,7 @@ website: https://github.com/Necnion8/P27Sougen
 
 depend:
   - WorldEdit
+  - ProtocolLib
 
 commands:
   sougen:
