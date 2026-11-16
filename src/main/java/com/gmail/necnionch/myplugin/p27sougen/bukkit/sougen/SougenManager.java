@@ -5,6 +5,8 @@ import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.events.*;
 import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ListMultimap;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -21,7 +23,9 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.BoundingBox;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -31,19 +35,19 @@ import java.util.stream.IntStream;
 
 public class SougenManager implements Listener {
 
-    public static NamespacedKey PDC_SOUGEN_ID;
+    public static NamespacedKey PDC_MAP_ID;
 
     private final JavaPlugin plugin;
     private final Logger logger;
     private final Map<String, SougenMap> maps = new HashMap<>();
     private final Map<Player, String> players = new HashMap<>();
-    private final Map<Player, BukkitTask> playerAnimationTasks = new HashMap<>();
+    private final ListMultimap<Player, Integer> playerAnimationTasks = ArrayListMultimap.create();
     private PacketListener packetListener;
 
     public SougenManager(JavaPlugin plugin, Logger logger) {
         this.plugin = plugin;
         this.logger = logger;
-        PDC_SOUGEN_ID = new NamespacedKey(plugin, "map_id");
+        PDC_MAP_ID = new NamespacedKey(plugin, "map_id");
     }
 
     public Logger getLogger() {
@@ -59,34 +63,29 @@ public class SougenManager implements Listener {
         maps.put(id, map);
     }
 
-    public void addPlayer(Player player, String mapId) {
+    public void addPlayer(Player player, String mapId, boolean animate) {
         players.put(player, mapId);
-        refreshPlayer(player);
-    }
-
-    public void addPlayerAnimation(Player player, String mapId) {
-        players.put(player, mapId);
-        SougenMap map = maps.get(mapId);
-        if (map != null) {
-            animateRefreshPlayer(player, map, true, .75);
+        if (animate) {
+            SougenMap map = maps.get(mapId);
+            if (map != null) {
+                playMapApplyAnimation(player, map, 0.75);
+            }
+        } else {
+            refreshPlayer(player);
         }
     }
 
     public void refreshPlayer(Player player) {
-        if (!player.isOnline())
-            return;
+        if (!player.isOnline()) return;
 
         String mapId = players.get(player);
-        if (mapId == null)
-            return;
+        if (mapId == null) return;
 
         SougenMap map = maps.get(mapId);
-        if (map == null)
-            return;
+        if (map == null) return;
 
         World world = player.getWorld();
-        if (!world.getUID().equals(player.getWorld().getUID()))
-            return;
+        if (!world.getUID().equals(player.getWorld().getUID())) return;
 
         //noinspection UnstableApiUsage
         player.sendMultiBlockChange(IntStream.range(0, map.schematic().positionList().size())
@@ -94,45 +93,26 @@ public class SougenManager implements Listener {
                 .collect(Collectors.toMap(i -> map.schematic().positionList().get(i).toPaper(), i -> map.schematic().blockDataList().get(i))));
     }
 
-    public void removePlayer(Player player) {
-        cancelAnimation(player);
+    public void removePlayer(Player player, boolean animate) {
         String mapId = players.remove(player);
-        if (mapId == null)
-            return;
+        if (mapId == null) return;
 
-        if (!player.isOnline())
-            return;
+        if (!player.isOnline()) return;
 
         SougenMap map = maps.get(mapId);
-        if (map == null)
-            return;
+        if (map == null) return;
 
         World world = player.getWorld();
-        if (!world.getUID().equals(map.destWorldId()))
-            return;
+        if (!world.getUID().equals(map.destWorldId())) return;
 
-        player.sendBlockChanges(map.schematic().positionList().stream()
-                .map(bp -> world.getBlockState(bp.x(), bp.y(), bp.z()))
-                .toList());
-    }
-
-    public void removePlayerAnimation(Player player) {
-        String mapId = players.remove(player);
-        if (mapId == null)
-            return;
-
-        if (!player.isOnline())
-            return;
-
-        SougenMap map = maps.get(mapId);
-        if (map == null)
-            return;
-
-        World world = player.getWorld();
-        if (!world.getUID().equals(map.destWorldId()))
-            return;
-
-        animateRefreshPlayer(player, map, false, .75);
+        if (animate) {
+            playMapRevertAnimation(player, map, 0.75);
+        } else {
+            cancelAllAnimations(player);
+            player.sendBlockChanges(map.schematic().positionList().stream()
+                    .map(bp -> world.getBlockState(bp.x(), bp.y(), bp.z()))
+                    .toList());
+        }
     }
 
     public boolean containsPlayer(Player player) {
@@ -141,17 +121,15 @@ public class SougenManager implements Listener {
 
     public boolean containsBlock(Player player, BlockPosition blockPosition) {
         String mapId = players.get(player);
-        if (mapId == null)
-            return false;
+        if (mapId == null) return false;
 
         SougenMap map = maps.get(mapId);
-        if (map == null)
-            return false;
+        if (map == null) return false;
 
         return map.schematic().positionList().contains(blockPosition);
     }
 
-    // init
+    // --- Lifecycle / Events ---
 
     public void setup() {
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
@@ -172,50 +150,42 @@ public class SougenManager implements Listener {
         if (packetListener != null) {
             ProtocolLibrary.getProtocolManager().removePacketListener(packetListener);
         }
-        new ArrayList<>(players.keySet()).forEach(this::removePlayer);
+        new ArrayList<>(players.keySet()).forEach(player -> removePlayer(player, false));
         players.clear();
         maps.clear();
     }
 
-    // implementation
-
     private void onBlockChangeSending(PacketEvent event) {
         Player player = event.getPlayer();
         SougenMap map = maps.get(players.get(player));
-        if (map == null)
-            return;
+        if (map == null) return;
 
-        if (!map.destWorldId().equals(player.getWorld().getUID()))
-            return;
+        if (!map.destWorldId().equals(player.getWorld().getUID())) return;
 
         PacketContainer packet = event.getPacket();
         BlockPosition bp = BlockPosition.of(packet.getBlockPositionModifier().read(0));
         SougenSchematic schematic = map.schematic();
 
         int idx = schematic.positionList().indexOf(bp);
-        if (idx == -1)
-            return;
+        if (idx == -1) return;
 
         WrappedBlockData blockData = schematic.packetBlockDataList().get(idx);
         packet.getBlockData().write(0, blockData);
     }
 
-    // events
-
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        cancelAnimation(event.getPlayer());
-        removePlayer(event.getPlayer());
+        cancelAllAnimations(event.getPlayer());
+        removePlayer(event.getPlayer(), false);
     }
 
     @EventHandler
     public void onPlayerWorldChange(PlayerChangedWorldEvent event) {
-        cancelAnimation(event.getPlayer());
-        removePlayer(event.getPlayer());
+        cancelAllAnimations(event.getPlayer());
+        removePlayer(event.getPlayer(), false);
     }
 
-
-    // test
+    // --- Animation & Entity Processing ---
 
     private interface BlockResolver<B> {
         B resolve(int index, BlockPosition blockPosition);
@@ -227,57 +197,66 @@ public class SougenManager implements Listener {
         static BlockResolver<BlockState> fromWorld(World world) {
             return (_, bp) -> world.getBlockState(bp.x(), bp.y(), bp.z());
         }
-
     }
 
-    public void animateRefreshPlayer(Player player, SougenMap map, boolean sougen, double thickness) {
-        if (!player.isOnline())
-            return;
+    public void playMapApplyAnimation(Player player, SougenMap map, double thickness) {
+        if (!player.isOnline()) return;
 
         World world = player.getWorld();
         Location centerLoc = player.getLocation().toBlockLocation();
         List<BlockPosition> posList = map.schematic().positionList();
 
-        if (sougen) {
-            // 1つのメソッドに統合された関数を呼び出すだけで、ブロックとエンティティの波データが完成！
-            Collection<AnimationWave<BlockData>> waves = sortBlockAnimation(
-                    world, centerLoc, player, posList,
-                    BlockResolver.fromBlockDataList(map.schematic().blockDataList()),
-                    thickness
-            );
+        Collection<AnimationWave<BlockData>> waves = sortBlockAnimation(
+                world, centerLoc, player, posList,
+                BlockResolver.fromBlockDataList(map.schematic().blockDataList()),
+                thickness
+        );
 
-            startAnimation(player, waves, wave -> {
-                //noinspection UnstableApiUsage
-                player.sendMultiBlockChange(BlockPosition.mapToPaper(wave.blocks()));
-                for (Entity entity : wave.entities()) {
-                    PersistentDataContainer pdc = entity.getPersistentDataContainer();
-                    if (!pdc.has(PDC_SOUGEN_ID) || map.id().equals(pdc.getOrDefault(PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
-                        player.showEntity(plugin, entity);
-                    } else {
-                        player.hideEntity(plugin, entity);
-                    }
+        startAnimation(player, waves, wave -> {
+            //noinspection UnstableApiUsage
+            player.sendMultiBlockChange(BlockPosition.mapToPaper(wave.blocks()));
+            updateEntityVisibility(player, map.id(), wave.entities(), true);
+        });
+    }
+
+    public void playMapRevertAnimation(Player player, SougenMap map, double thickness) {
+        if (!player.isOnline()) return;
+
+        World world = player.getWorld();
+        Location centerLoc = player.getLocation().toBlockLocation();
+        List<BlockPosition> posList = map.schematic().positionList();
+
+        Collection<AnimationWave<BlockState>> waves = sortBlockAnimation(
+                world, centerLoc, player, posList,
+                BlockResolver.fromWorld(world),
+                thickness
+        );
+
+        startAnimation(player, waves, wave -> {
+            player.sendBlockChanges(wave.blocks().values());
+            updateEntityVisibility(player, map.id(), wave.entities(), false);
+        });
+    }
+
+    private void updateEntityVisibility(Player player, String mapId, List<Entity> entities, boolean apply) {
+        for (Entity entity : entities) {
+            PersistentDataContainer pdc = entity.getPersistentDataContainer();
+            String entityMapId = pdc.getOrDefault(PDC_MAP_ID, PersistentDataType.STRING, "");
+            boolean matchesMap = mapId.equals(entityMapId);
+
+            if (apply) {
+                if (entityMapId.isEmpty() || matchesMap) {
+                    player.showEntity(plugin, entity);
+                } else {
+                    player.hideEntity(plugin, entity);
                 }
-            });
-
-        } else {
-            Collection<AnimationWave<BlockState>> waves = sortBlockAnimation(
-                    world, centerLoc, player, posList,
-                    BlockResolver.fromWorld(world),
-                    thickness
-            );
-
-            startAnimation(player, waves, wave -> {
-                player.sendBlockChanges(wave.blocks().values());
-
-                for (Entity entity : wave.entities()) {
-                    PersistentDataContainer pdc = entity.getPersistentDataContainer();
-                    if (map.id().equals(pdc.getOrDefault(PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
-                        player.hideEntity(plugin, entity);
-                    } else {
-                        player.showEntity(plugin, entity);
-                    }
+            } else {
+                if (matchesMap) {
+                    player.hideEntity(plugin, entity);
+                } else {
+                    player.showEntity(plugin, entity);
                 }
-            });
+            }
         }
     }
 
@@ -285,7 +264,6 @@ public class SougenManager implements Listener {
             World world, Location centerLocation, Player player, List<BlockPosition> posList,
             BlockResolver<B> blockResolver, double thickness) {
 
-        // 1. 距離ごとにブロックをグループ化 (TreeMapで自動ソート)
         Map<Double, Map<BlockPosition, B>> distanceGroups = new TreeMap<>();
 
         for (int i = 0; i < posList.size(); i++) {
@@ -301,7 +279,6 @@ public class SougenManager implements Listener {
                     .put(bp, blockResolver.resolve(i, bp));
         }
 
-        // 2. グループ化された距離（波）ごとに、エンティティをスキャンして AnimationWave リストを構築
         List<AnimationWave<B>> waves = new ArrayList<>();
 
         for (Map.Entry<Double, Map<BlockPosition, B>> entry : distanceGroups.entrySet()) {
@@ -313,8 +290,7 @@ public class SougenManager implements Listener {
             double outerRadiusSq = outerRadius * outerRadius;
             double innerRadiusSq = innerRadius * innerRadius;
 
-            // BoundingBox で事前絞り込み
-            org.bukkit.util.BoundingBox scanBox = new org.bukkit.util.BoundingBox(
+            BoundingBox scanBox = new BoundingBox(
                     centerLocation.getX() - outerRadius, centerLocation.getY() - outerRadius, centerLocation.getZ() - outerRadius,
                     centerLocation.getX() + outerRadius, centerLocation.getY() + outerRadius, centerLocation.getZ() + outerRadius
             );
@@ -339,26 +315,27 @@ public class SougenManager implements Listener {
     }
 
     private <E> void startAnimation(Player player, Collection<E> collection, Consumer<E> execute) {
-//        cancelAnimation(player);
-        playerAnimationTasks.put(player, new BukkitRunnable() {
+        BukkitTask task = new BukkitRunnable() {
             private final Iterator<E> it = collection.iterator();
 
             @Override
             public void run() {
                 if (!it.hasNext() || !player.isOnline()) {
                     cancel();
+                    playerAnimationTasks.remove(player, getTaskId());
                 } else {
                     execute.accept(it.next());
                 }
             }
-        }.runTaskTimer(plugin, 0, 1));
+        }.runTaskTimer(plugin, 0, 1);
+
+        playerAnimationTasks.put(player, task.getTaskId());
     }
 
-
-    private void cancelAnimation(Player player) {
-        BukkitTask task = playerAnimationTasks.remove(player);
-        if (task != null && !task.isCancelled()) {
-            task.cancel();
+    private void cancelAllAnimations(Player player) {
+        BukkitScheduler scheduler = plugin.getServer().getScheduler();
+        for (Integer taskId : playerAnimationTasks.removeAll(player)) {
+            scheduler.cancelTask(taskId);
         }
     }
 

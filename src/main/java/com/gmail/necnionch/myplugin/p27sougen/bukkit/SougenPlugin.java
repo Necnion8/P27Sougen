@@ -52,11 +52,11 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         if (args.length >= 1 && "set".equalsIgnoreCase(args[0])) {
             Player player = (Player) sender;
             String mapId = (args.length >= 2) ? args[1] : "test";
-            manager.addPlayer(player, mapId);
+            manager.addPlayer(player, mapId, false);
 
         } else if (args.length == 1 && "unset".equalsIgnoreCase(args[0])) {
             Player player = (Player) sender;
-            manager.removePlayer(player);
+            manager.removePlayer(player, false);
         } else if (args.length == 1 && "item".equalsIgnoreCase(args[0])) {
             Player player = (Player) sender;
             ItemStack itemStack = ItemStack.of(Material.LEVER);
@@ -118,9 +118,9 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         Player player = event.getPlayer();
         if (manager.containsPlayer(player)) {
-            manager.removePlayerAnimation(player);
+            manager.removePlayer(player, true);
         } else {
-            manager.addPlayerAnimation(player, "test");
+            manager.addPlayer(player, "test", true);
         }
     }
 
@@ -141,11 +141,11 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         Entity targetEntity = event.getRightClicked();
 
         PersistentDataContainer pdc = targetEntity.getPersistentDataContainer();
-        if ("test".equals(pdc.getOrDefault(SougenManager.PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
-            pdc.remove(SougenManager.PDC_SOUGEN_ID);
+        if ("test".equals(pdc.getOrDefault(SougenManager.PDC_MAP_ID, PersistentDataType.STRING, ""))) {
+            pdc.remove(SougenManager.PDC_MAP_ID);
             player.sendMessage("Tag Removed");
         } else {
-            pdc.set(SougenManager.PDC_SOUGEN_ID, PersistentDataType.STRING, "test");
+            pdc.set(SougenManager.PDC_MAP_ID, PersistentDataType.STRING, "test");
             player.sendMessage("Tag Added");
         }
     }
