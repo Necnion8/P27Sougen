@@ -9,10 +9,12 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -30,11 +32,11 @@ import java.util.logging.Level;
 
 public final class SougenPlugin extends JavaPlugin implements Listener {
 
-    private final SougenManager manager = new SougenManager(getLogger());
+    private final SougenManager manager = new SougenManager(this, getLogger());
 
     @Override
     public void onEnable() {
-        manager.setup(this);
+        manager.setup();
         addSougenSchematics();
         getServer().getPluginManager().registerEvents(this, this);
     }
@@ -67,6 +69,14 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
             PlayerInventory inv = player.getInventory();
             inv.addItem(inv.getItemInMainHand());
             inv.setItemInMainHand(itemStack);
+
+            itemStack = ItemStack.of(Material.NAME_TAG);
+            itemStack.editMeta(meta -> {
+                meta.displayName(Component.text("Entity Tag"));
+                PersistentDataContainer pdc = meta.getPersistentDataContainer();
+                pdc.set(new NamespacedKey(this, "i"), PersistentDataType.STRING, "entity");
+            });
+            inv.addItem(itemStack);
         }
 
         return true;
@@ -108,9 +118,35 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         Player player = event.getPlayer();
         if (manager.containsPlayer(player)) {
-            manager.removePlayerAnimation(player, this);
+            manager.removePlayerAnimation(player);
         } else {
-            manager.addPlayerAnimation(player, "test", this);
+            manager.addPlayerAnimation(player, "test");
+        }
+    }
+
+    @EventHandler
+    public void onInteract(PlayerInteractAtEntityEvent event) {
+        if (!EquipmentSlot.HAND.equals(event.getHand()))
+            return;
+
+        Player player = event.getPlayer();
+        Optional<ItemMeta> itemMeta = Optional.of(player.getInventory().getItemInMainHand()).map(ItemStack::getItemMeta);
+        if (itemMeta.isEmpty())
+            return;
+
+        if (!"entity".equalsIgnoreCase(itemMeta.get().getPersistentDataContainer().get(new NamespacedKey(this, "i"), PersistentDataType.STRING)))
+            return;
+
+        event.setCancelled(true);
+        Entity targetEntity = event.getRightClicked();
+
+        PersistentDataContainer pdc = targetEntity.getPersistentDataContainer();
+        if ("test".equals(pdc.getOrDefault(SougenManager.PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
+            pdc.remove(SougenManager.PDC_SOUGEN_ID);
+            player.sendMessage("Tag Removed");
+        } else {
+            pdc.set(SougenManager.PDC_SOUGEN_ID, PersistentDataType.STRING, "test");
+            player.sendMessage("Tag Added");
         }
     }
 

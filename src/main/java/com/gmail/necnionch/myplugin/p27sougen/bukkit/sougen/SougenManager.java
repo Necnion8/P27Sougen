@@ -6,15 +6,19 @@ import com.comphenix.protocol.events.*;
 import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
@@ -27,14 +31,19 @@ import java.util.stream.IntStream;
 
 public class SougenManager implements Listener {
 
-    private final Map<String, SougenMap> maps = new HashMap<>();
+    public static NamespacedKey PDC_SOUGEN_ID;
+
+    private final JavaPlugin plugin;
     private final Logger logger;
+    private final Map<String, SougenMap> maps = new HashMap<>();
     private final Map<Player, String> players = new HashMap<>();
     private final Map<Player, BukkitTask> playerAnimationTasks = new HashMap<>();
     private PacketListener packetListener;
 
-    public SougenManager(Logger logger) {
+    public SougenManager(JavaPlugin plugin, Logger logger) {
+        this.plugin = plugin;
         this.logger = logger;
+        PDC_SOUGEN_ID = new NamespacedKey(plugin, "map_id");
     }
 
     public Logger getLogger() {
@@ -55,11 +64,11 @@ public class SougenManager implements Listener {
         refreshPlayer(player);
     }
 
-    public void addPlayerAnimation(Player player, String mapId, JavaPlugin plugin) {
+    public void addPlayerAnimation(Player player, String mapId) {
         players.put(player, mapId);
         SougenMap map = maps.get(mapId);
         if (map != null) {
-            animateRefreshPlayer(player, plugin, map, true);
+            animateRefreshPlayer(player, map, true, .75);
         }
     }
 
@@ -107,8 +116,7 @@ public class SougenManager implements Listener {
                 .toList());
     }
 
-    public void removePlayerAnimation(Player player, JavaPlugin plugin) {
-        cancelAnimation(player);
+    public void removePlayerAnimation(Player player) {
         String mapId = players.remove(player);
         if (mapId == null)
             return;
@@ -124,7 +132,7 @@ public class SougenManager implements Listener {
         if (!world.getUID().equals(map.destWorldId()))
             return;
 
-        animateRefreshPlayer(player, plugin, map, false);
+        animateRefreshPlayer(player, map, false, .75);
     }
 
     public boolean containsPlayer(Player player) {
@@ -145,7 +153,7 @@ public class SougenManager implements Listener {
 
     // init
 
-    public void setup(JavaPlugin plugin) {
+    public void setup() {
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
 
         if (packetListener == null) {
@@ -203,9 +211,8 @@ public class SougenManager implements Listener {
     @EventHandler
     public void onPlayerWorldChange(PlayerChangedWorldEvent event) {
         cancelAnimation(event.getPlayer());
-        refreshPlayer(event.getPlayer());
+        removePlayer(event.getPlayer());
     }
-
 
 
     // test
@@ -223,9 +230,62 @@ public class SougenManager implements Listener {
 
     }
 
-    private <B> Collection<Map<BlockPosition, B>> sortBlockAnimation(Location centerLocation, List<BlockPosition> posList, BlockResolver<B> blockResolver) {
-        // 1. 距離ごとにブロックをグループ化する (TreeMapを使うと距離順に自動ソートされます)
-        // キー: ユークリッド距離（実距離、または平方根を取らない距離のままでもグループ化可能ですが、今回は距離そのものをキーにします）
+    public void animateRefreshPlayer(Player player, SougenMap map, boolean sougen, double thickness) {
+        if (!player.isOnline())
+            return;
+
+        World world = player.getWorld();
+        Location centerLoc = player.getLocation().toBlockLocation();
+        List<BlockPosition> posList = map.schematic().positionList();
+
+        if (sougen) {
+            // 1つのメソッドに統合された関数を呼び出すだけで、ブロックとエンティティの波データが完成！
+            Collection<AnimationWave<BlockData>> waves = sortBlockAnimation(
+                    world, centerLoc, player, posList,
+                    BlockResolver.fromBlockDataList(map.schematic().blockDataList()),
+                    thickness
+            );
+
+            startAnimation(player, waves, wave -> {
+                //noinspection UnstableApiUsage
+                player.sendMultiBlockChange(BlockPosition.mapToPaper(wave.blocks()));
+                for (Entity entity : wave.entities()) {
+                    PersistentDataContainer pdc = entity.getPersistentDataContainer();
+                    if (!pdc.has(PDC_SOUGEN_ID) || map.id().equals(pdc.getOrDefault(PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
+                        player.showEntity(plugin, entity);
+                    } else {
+                        player.hideEntity(plugin, entity);
+                    }
+                }
+            });
+
+        } else {
+            Collection<AnimationWave<BlockState>> waves = sortBlockAnimation(
+                    world, centerLoc, player, posList,
+                    BlockResolver.fromWorld(world),
+                    thickness
+            );
+
+            startAnimation(player, waves, wave -> {
+                player.sendBlockChanges(wave.blocks().values());
+
+                for (Entity entity : wave.entities()) {
+                    PersistentDataContainer pdc = entity.getPersistentDataContainer();
+                    if (map.id().equals(pdc.getOrDefault(PDC_SOUGEN_ID, PersistentDataType.STRING, ""))) {
+                        player.hideEntity(plugin, entity);
+                    } else {
+                        player.showEntity(plugin, entity);
+                    }
+                }
+            });
+        }
+    }
+
+    private <B> Collection<AnimationWave<B>> sortBlockAnimation(
+            World world, Location centerLocation, Player player, List<BlockPosition> posList,
+            BlockResolver<B> blockResolver, double thickness) {
+
+        // 1. 距離ごとにブロックをグループ化 (TreeMapで自動ソート)
         Map<Double, Map<BlockPosition, B>> distanceGroups = new TreeMap<>();
 
         for (int i = 0; i < posList.size(); i++) {
@@ -234,50 +294,55 @@ public class SougenManager implements Listener {
                     Math.pow(bp.y() - centerLocation.y(), 2) +
                     Math.pow(bp.z() - centerLocation.z(), 2);
 
-            // 実距離 (小数点以下を丸めてグループの解像度を調整することも可能。例: Math.floor(Math.sqrt(distanceSq)))
             double distance = Math.sqrt(distanceSq);
+            double roundedDistance = Math.round(distance / thickness) * thickness;
 
-            // 距離が同じ（あるいは非常に近い）グループへ格納
-            // ※ 浮動小数点の誤差が気になる場合は Math.round(distance * 10.0) / 10.0 などで丸めると綺麗にまとまります
-//            double roundedDistance = Math.round(distance * 2.0) / 2.0; // 0.5ブロック単位で波の層を作る場合
-            double roundedDistance = Math.round(distance * 0.75) / 0.75;
-//            double roundedDistance = Math.round(distance * 1.0) / 1.0;
-
-            distanceGroups.computeIfAbsent(roundedDistance, k -> new HashMap<>())
+            distanceGroups.computeIfAbsent(roundedDistance, _ -> new HashMap<>())
                     .put(bp, blockResolver.resolve(i, bp));
         }
 
-        // グループ（距離のリスト）を返す
-        return distanceGroups.values();
-    }
+        // 2. グループ化された距離（波）ごとに、エンティティをスキャンして AnimationWave リストを構築
+        List<AnimationWave<B>> waves = new ArrayList<>();
 
-    public void animateRefreshPlayer(Player player, JavaPlugin plugin, SougenMap map, boolean sougen) {
-        if (!player.isOnline())
-            return;
+        for (Map.Entry<Double, Map<BlockPosition, B>> entry : distanceGroups.entrySet()) {
+            double currentRadius = entry.getKey();
+            Map<BlockPosition, B> blocks = entry.getValue();
 
-        if (sougen) {
-            Collection<Map<BlockPosition, BlockData>> animateBlocks = sortBlockAnimation(
-                    player.getLocation().toBlockLocation(),
-                    map.schematic().positionList(),
-                    BlockResolver.fromBlockDataList(map.schematic().blockDataList())
+            double outerRadius = currentRadius + thickness;
+            double innerRadius = Math.max(0, currentRadius - thickness);
+            double outerRadiusSq = outerRadius * outerRadius;
+            double innerRadiusSq = innerRadius * innerRadius;
+
+            // BoundingBox で事前絞り込み
+            org.bukkit.util.BoundingBox scanBox = new org.bukkit.util.BoundingBox(
+                    centerLocation.getX() - outerRadius, centerLocation.getY() - outerRadius, centerLocation.getZ() - outerRadius,
+                    centerLocation.getX() + outerRadius, centerLocation.getY() + outerRadius, centerLocation.getZ() + outerRadius
             );
-            //noinspection UnstableApiUsage
-            startAnimation(player, plugin, animateBlocks, m -> player.sendMultiBlockChange(BlockPosition.mapToPaper(m)));
 
-        } else {
-            Collection<Map<BlockPosition, BlockState>> animateBlocks = sortBlockAnimation(
-                    player.getLocation(),
-                    map.schematic().positionList(),
-                    BlockResolver.fromWorld(player.getWorld())
-            );
-            startAnimation(player, plugin, animateBlocks, m -> player.sendBlockChanges(m.values()));
+            List<Entity> matchedEntities = new ArrayList<>();
+            world.getNearbyEntities(scanBox).forEach(entity -> {
+                if (entity.equals(player)) return;
+
+                double distSq = entity.getLocation().distanceSquared(centerLocation);
+                if (distSq >= innerRadiusSq && distSq <= outerRadiusSq) {
+                    matchedEntities.add(entity);
+                }
+            });
+
+            waves.add(new AnimationWave<>(blocks, matchedEntities));
         }
+
+        return waves;
     }
 
-    private <E> void startAnimation(Player player, JavaPlugin plugin, Collection<E> collection, Consumer<E> execute) {
+    private record AnimationWave<B>(Map<BlockPosition, B> blocks, List<Entity> entities) {
+    }
+
+    private <E> void startAnimation(Player player, Collection<E> collection, Consumer<E> execute) {
 //        cancelAnimation(player);
         playerAnimationTasks.put(player, new BukkitRunnable() {
             private final Iterator<E> it = collection.iterator();
+
             @Override
             public void run() {
                 if (!it.hasNext() || !player.isOnline()) {
@@ -288,6 +353,7 @@ public class SougenManager implements Listener {
             }
         }.runTaskTimer(plugin, 0, 1));
     }
+
 
     private void cancelAnimation(Player player) {
         BukkitTask task = playerAnimationTasks.remove(player);
