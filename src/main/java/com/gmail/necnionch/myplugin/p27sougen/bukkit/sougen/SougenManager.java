@@ -7,9 +7,7 @@ import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
-import org.bukkit.Location;
-import org.bukkit.NamespacedKey;
-import org.bukkit.World;
+import org.bukkit.*;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
@@ -28,12 +26,18 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.BoundingBox;
 
 import java.util.*;
-import java.util.function.Consumer;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public class SougenManager implements Listener {
+
+    private static final float DEFAULT_THICKNESS = 2.0f;
+    private static final BlockData STONE_BLOCK_DATA = Bukkit.createBlockData(Material.STONE);
+    private static final BlockData AIR_BLOCK_DATA = Bukkit.createBlockData(Material.AIR);
 
     public static NamespacedKey PDC_MAP_ID;
 
@@ -68,7 +72,7 @@ public class SougenManager implements Listener {
         if (animate) {
             SougenMap map = maps.get(mapId);
             if (map != null) {
-                playMapApplyAnimation(player, map, 0.75);
+                playMapApplyAnimation(player, map, DEFAULT_THICKNESS);
             }
         } else {
             refreshPlayer(player);
@@ -106,7 +110,7 @@ public class SougenManager implements Listener {
         if (!world.getUID().equals(map.destWorldId())) return;
 
         if (animate) {
-            playMapRevertAnimation(player, map, 0.75);
+            playMapRevertAnimation(player, map, DEFAULT_THICKNESS);
         } else {
             cancelAllAnimations(player);
             player.sendBlockChanges(map.schematic().positionList().stream()
@@ -206,16 +210,27 @@ public class SougenManager implements Listener {
         Location centerLoc = player.getLocation().toBlockLocation();
         List<BlockPosition> posList = map.schematic().positionList();
 
-        Collection<AnimationWave<BlockData>> waves = sortBlockAnimation(
+        List<AnimationWave<BlockData>> waves = new ArrayList<>(sortBlockAnimation(
                 world, centerLoc, player, posList,
                 BlockResolver.fromBlockDataList(map.schematic().blockDataList()),
                 thickness
-        );
+        ));
 
-        startAnimation(player, waves, wave -> {
-            //noinspection UnstableApiUsage
-            player.sendMultiBlockChange(BlockPosition.mapToPaper(wave.blocks()));
-            updateEntityVisibility(player, map.id(), wave.entities(), true);
+        startPipelinedAnimation(player, waves, (wave, isFinal, tick) -> {
+            if (!isFinal) {
+                //noinspection UnstableApiUsage
+                player.sendMultiBlockChange(BlockPosition.mapToPaper(createStoneMap(wave.blocks(), BlockData::getMaterial)));
+            } else {
+                //noinspection UnstableApiUsage
+                player.sendMultiBlockChange(BlockPosition.mapToPaper(wave.blocks()));
+                if (!wave.entities().isEmpty()) {
+                    updateEntityVisibility(player, map.id(), wave.entities(), true);
+                }
+                playBlockParticle(player, map, wave.blocks(), bd -> !bd.getMaterial().isAir());
+                if (tick % 3 == 0) {
+                    playBlockSound(player, wave, BlockData::getSoundGroup);
+                }
+            }
         });
     }
 
@@ -226,16 +241,83 @@ public class SougenManager implements Listener {
         Location centerLoc = player.getLocation().toBlockLocation();
         List<BlockPosition> posList = map.schematic().positionList();
 
-        Collection<AnimationWave<BlockState>> waves = sortBlockAnimation(
+        List<AnimationWave<BlockState>> waves = new ArrayList<>(sortBlockAnimation(
                 world, centerLoc, player, posList,
                 BlockResolver.fromWorld(world),
                 thickness
-        );
+        ));
 
-        startAnimation(player, waves, wave -> {
-            player.sendBlockChanges(wave.blocks().values());
-            updateEntityVisibility(player, map.id(), wave.entities(), false);
+        startPipelinedAnimation(player, waves, (wave, isFinal, tick) -> {
+            if (!isFinal) {
+                //noinspection UnstableApiUsage
+                player.sendMultiBlockChange(BlockPosition.mapToPaper(createStoneMap(wave.blocks(), BlockState::getType)));
+            } else {
+                Map<BlockPosition, BlockData> originalMap = wave.blocks().entrySet().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().getBlockData()));
+                //noinspection UnstableApiUsage
+                player.sendMultiBlockChange(BlockPosition.mapToPaper(originalMap));
+                if (!wave.entities().isEmpty()) {
+                    updateEntityVisibility(player, map.id(), wave.entities(), false);
+                }
+                playBlockParticle(player, map, wave.blocks(), e -> !e.getType().isAir());
+                if (tick % 3 == 0) {
+                    playBlockSound(player, wave, bs -> bs.getBlockData().getSoundGroup());
+                }
+            }
         });
+    }
+
+    private class AnimationTask<B> extends BukkitRunnable {
+
+        private static final int STONE_LAG = 6;
+        private final Player player;
+        private final List<AnimationWave<B>> waves;
+        private final Executor<B> executor;
+        private int tick = 0;
+        private final int totalWaves;
+
+        interface Executor<B> {
+            void execute(AnimationWave<B> wave, boolean isFinal, int tick);
+        }
+
+        public AnimationTask(Player player, List<AnimationWave<B>> waves, Executor<B> executor) {
+            this.player = player;
+            this.waves = waves;
+            this.executor = executor;
+            this.totalWaves = waves.size();
+        }
+
+        @Override
+        public void run() {
+            // すべてのウェーブが石化を終え、かつ遅延分の処理も完了したら終了
+            if (!player.isOnline() || (tick >= totalWaves + STONE_LAG)) {
+                cancel();
+                playerAnimationTasks.remove(player, getTaskId());
+                return;
+            }
+
+            // 1. ラグ（遅延）分遅れて、本番ブロックにする（完了フェーズ）
+            int finalIndex = tick - STONE_LAG;
+            if (finalIndex >= 0 && finalIndex < totalWaves) {
+                executor.execute(waves.get(finalIndex), true, tick);
+            }
+
+            // 2. 現在のウェーブを「石」にする（先行フェーズ）
+            if (tick < totalWaves) {
+                executor.execute(waves.get(tick), false, tick);
+            }
+
+            if (tick == 0) {
+                player.playSound(player.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, .3f, 2f);
+            }
+
+            tick++;
+        }
+    }
+
+    private <B> void startPipelinedAnimation(Player player, List<AnimationWave<B>> waves, AnimationTask.Executor<B> executor) {
+        BukkitTask task = new AnimationTask<>(player, waves, executor).runTaskTimer(plugin, 0, 1);
+        playerAnimationTasks.put(player, task.getTaskId());
     }
 
     private void updateEntityVisibility(Player player, String mapId, List<Entity> entities, boolean apply) {
@@ -257,6 +339,42 @@ public class SougenManager implements Listener {
                     player.showEntity(plugin, entity);
                 }
             }
+        }
+    }
+
+    private <B> void playBlockSound(Player player, AnimationWave<B> wave, Function<B, SoundGroup> soundGroupFunction) {
+        if (wave.blocks().isEmpty()) return;
+
+        List<B> blocks = (wave.blocks() instanceof List) ? (List<B>) wave.blocks().values() : new ArrayList<>(wave.blocks().values());
+        int index = ThreadLocalRandom.current().nextInt(blocks.size());
+        SoundGroup soundGroup = soundGroupFunction.apply(blocks.get(index));
+        player.playSound(
+                player.getLocation(),
+                soundGroup.getPlaceSound(),
+                (float) (soundGroup.getVolume() * Math.min(1f, 4f / wave.radius())),
+                soundGroup.getPitch()
+        );
+    }
+
+    private <B> void playBlockParticle(Player player, SougenMap map, Map<BlockPosition, B> blockPositions, Predicate<B> filter) {
+        List<BlockPosition> blocks = blockPositions.entrySet().stream()
+                .filter(e -> map.destPosition().y() - 2 <= e.getKey().y())
+                .filter(e -> filter.test(e.getValue()))
+                .map(Map.Entry::getKey)
+                .toList();
+        if (blocks.isEmpty()) return;
+
+        for (int i = 0; i < blocks.size() / 20; i++) {
+            int index = ThreadLocalRandom.current().nextInt(blocks.size());
+            BlockPosition blockPosition = blocks.get(index);
+            player.spawnParticle(
+                    i % 2 == 0 ? Particle.FIREWORK : Particle.HAPPY_VILLAGER,
+                    blockPosition.x() + 0.5,
+                    blockPosition.y() + 1,
+                    blockPosition.z() + 0.5,
+                    1, 5, .5, 5, 0.1
+            );
+
         }
     }
 
@@ -305,31 +423,18 @@ public class SougenManager implements Listener {
                 }
             });
 
-            waves.add(new AnimationWave<>(blocks, matchedEntities));
+            waves.add(new AnimationWave<>(blocks, matchedEntities, currentRadius));
         }
 
         return waves;
     }
 
-    private record AnimationWave<B>(Map<BlockPosition, B> blocks, List<Entity> entities) {
+    private <B> Map<BlockPosition, BlockData> createStoneMap(Map<BlockPosition, B> blocks, Function<B, Material> type) {
+        return blocks.entrySet().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, e -> type.apply(e.getValue()).isCollidable() ? STONE_BLOCK_DATA : AIR_BLOCK_DATA));
     }
 
-    private <E> void startAnimation(Player player, Collection<E> collection, Consumer<E> execute) {
-        BukkitTask task = new BukkitRunnable() {
-            private final Iterator<E> it = collection.iterator();
-
-            @Override
-            public void run() {
-                if (!it.hasNext() || !player.isOnline()) {
-                    cancel();
-                    playerAnimationTasks.remove(player, getTaskId());
-                } else {
-                    execute.accept(it.next());
-                }
-            }
-        }.runTaskTimer(plugin, 0, 1);
-
-        playerAnimationTasks.put(player, task.getTaskId());
+    private record AnimationWave<B>(Map<BlockPosition, B> blocks, List<Entity> entities, double radius) {
     }
 
     private void cancelAllAnimations(Player player) {
