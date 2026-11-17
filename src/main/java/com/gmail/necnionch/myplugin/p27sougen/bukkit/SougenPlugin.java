@@ -43,7 +43,7 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        manager.cleanup();
+        manager.shutdown();
     }
 
     @Override
@@ -140,12 +140,11 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         Entity targetEntity = event.getRightClicked();
 
-        PersistentDataContainer pdc = targetEntity.getPersistentDataContainer();
-        if ("test".equals(pdc.getOrDefault(SougenManager.PDC_MAP_ID, PersistentDataType.STRING, ""))) {
-            pdc.remove(SougenManager.PDC_MAP_ID);
+        if (manager.getSougenEntityMapId(targetEntity) != null) {
+            manager.removeSougenEntity(targetEntity.getWorld(), targetEntity);
             player.sendMessage("Tag Removed");
         } else {
-            pdc.set(SougenManager.PDC_MAP_ID, PersistentDataType.STRING, "test");
+            manager.addSougenEntity(targetEntity.getWorld(), targetEntity, "test");
             player.sendMessage("Tag Added");
         }
     }

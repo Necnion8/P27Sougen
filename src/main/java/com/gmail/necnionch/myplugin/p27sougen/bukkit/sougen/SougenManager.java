@@ -24,6 +24,7 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.BoundingBox;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
@@ -39,7 +40,8 @@ public class SougenManager implements Listener {
     private static final BlockData STONE_BLOCK_DATA = Bukkit.createBlockData(Material.STONE);
     private static final BlockData AIR_BLOCK_DATA = Bukkit.createBlockData(Material.AIR);
 
-    public static NamespacedKey PDC_MAP_ID;
+    public static NamespacedKey PDC_ENTITY_MAP_ID;
+    public static NamespacedKey PDC_WORLD_ENTITY_LIST_ID;
 
     private final JavaPlugin plugin;
     private final Logger logger;
@@ -51,7 +53,8 @@ public class SougenManager implements Listener {
     public SougenManager(JavaPlugin plugin, Logger logger) {
         this.plugin = plugin;
         this.logger = logger;
-        PDC_MAP_ID = new NamespacedKey(plugin, "map_id");
+        PDC_ENTITY_MAP_ID = new NamespacedKey(plugin, "map_id");
+        PDC_WORLD_ENTITY_LIST_ID = new NamespacedKey(plugin, "entities");
     }
 
     public Logger getLogger() {
@@ -65,6 +68,17 @@ public class SougenManager implements Listener {
         SougenSchematic fixed = new SougenSchematic(positionList, schematic.blockDataList(), schematic.packetBlockDataList());
         SougenMap map = new SougenMap(id, fixed, destWorldId, destPosition);
         maps.put(id, map);
+
+        World world = plugin.getServer().getWorld(destWorldId);
+        if (world != null) {
+            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
+                    .map(world::getEntity)
+                    .filter(Objects::nonNull)
+                    .toList();
+            for (Player player : world.getPlayers()) {
+                updateEntityVisibility(player, id, taggedEntities, id.equals(players.get(player)));
+            }
+        }
     }
 
     public void addPlayer(Player player, String mapId, boolean animate) {
@@ -105,6 +119,15 @@ public class SougenManager implements Listener {
 
         SougenMap map = maps.get(mapId);
         if (map == null) return;
+
+        World mapWorld = plugin.getServer().getWorld(map.destWorldId());
+        if (mapWorld != null) {
+            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(mapWorld).stream()
+                    .map(mapWorld::getEntity)
+                    .filter(Objects::nonNull)
+                    .toList();
+            updateEntityVisibility(player, mapId, taggedEntities, false);
+        }
 
         World world = player.getWorld();
         if (!world.getUID().equals(map.destWorldId())) return;
@@ -149,13 +172,29 @@ public class SougenManager implements Listener {
         ProtocolLibrary.getProtocolManager().addPacketListener(packetListener);
     }
 
-    public void cleanup() {
+    public void shutdown() {
         HandlerList.unregisterAll(this);
         if (packetListener != null) {
             ProtocolLibrary.getProtocolManager().removePacketListener(packetListener);
         }
+
         new ArrayList<>(players.keySet()).forEach(player -> removePlayer(player, false));
         players.clear();
+
+        for (SougenMap map : maps.values()) {
+            World world = plugin.getServer().getWorld(map.destWorldId());
+            if (world == null) continue;
+            if (world.getPlayers().isEmpty()) continue;
+
+            List<UUID> entities = loadTaggedEntitiesIdFrom(world);
+            if (entities == null || entities.isEmpty()) continue;
+
+            for (UUID entityId : entities) {
+                Entity entity = world.getEntity(entityId);
+                if (entity == null) continue;
+                world.getPlayers().forEach(p -> p.showEntity(plugin, entity));
+            }
+        }
         maps.clear();
     }
 
@@ -323,7 +362,7 @@ public class SougenManager implements Listener {
     private void updateEntityVisibility(Player player, String mapId, List<Entity> entities, boolean apply) {
         for (Entity entity : entities) {
             PersistentDataContainer pdc = entity.getPersistentDataContainer();
-            String entityMapId = pdc.getOrDefault(PDC_MAP_ID, PersistentDataType.STRING, "");
+            String entityMapId = pdc.getOrDefault(PDC_ENTITY_MAP_ID, PersistentDataType.STRING, "");
             boolean matchesMap = mapId.equals(entityMapId);
 
             if (apply) {
@@ -442,6 +481,73 @@ public class SougenManager implements Listener {
         for (Integer taskId : playerAnimationTasks.removeAll(player)) {
             scheduler.cancelTask(taskId);
         }
+    }
+
+    // --- Entity Tag ---
+
+    public void addSougenEntity(World world, Entity entity, String mapId) {
+        List<UUID> list = loadTaggedEntitiesIdFrom(world);
+        if (!list.contains(entity.getUniqueId())) {
+            list.add(entity.getUniqueId());
+        }
+        PersistentDataContainer pdc = entity.getPersistentDataContainer();
+        pdc.set(PDC_ENTITY_MAP_ID, PersistentDataType.STRING, mapId);
+        saveTaggedEntitiesIdTo(world, list);
+    }
+
+    public void removeSougenEntity(World world, Entity entity) {
+        PersistentDataContainer pdc = entity.getPersistentDataContainer();
+        pdc.remove(PDC_ENTITY_MAP_ID);
+
+        List<UUID> list = loadTaggedEntitiesIdFrom(world);
+        while (list.contains(entity.getUniqueId())) {
+            list.remove(entity.getUniqueId());
+        }
+        saveTaggedEntitiesIdTo(world, list);
+    }
+
+    public @Nullable String getSougenEntityMapId(Entity entity) {
+        PersistentDataContainer pdc = entity.getPersistentDataContainer();
+        return pdc.has(PDC_ENTITY_MAP_ID, PersistentDataType.STRING) ? pdc.get(PDC_ENTITY_MAP_ID, PersistentDataType.STRING) : null;
+    }
+
+    public List<UUID> loadTaggedEntitiesIdFrom(World world) {
+        PersistentDataContainer pdc = world.getPersistentDataContainer();
+        List<UUID> uuidList = new ArrayList<>();
+
+        long[] longArray = pdc.get(PDC_WORLD_ENTITY_LIST_ID, PersistentDataType.LONG_ARRAY);
+        if (longArray == null) {
+            return uuidList;
+        }
+
+        for (int i = 0; i < longArray.length; i += 2) {
+            if (i + 1 < longArray.length) {
+                long most = longArray[i];
+                long least = longArray[i + 1];
+                uuidList.add(new UUID(most, least));
+            }
+        }
+
+        return uuidList;
+    }
+
+    public void saveTaggedEntitiesIdTo(World world, List<UUID> uuidList) {
+        PersistentDataContainer pdc = world.getPersistentDataContainer();
+
+        if (uuidList == null || uuidList.isEmpty()) {
+            pdc.remove(PDC_WORLD_ENTITY_LIST_ID);
+            return;
+        }
+
+        long[] longArray = new long[uuidList.size() * 2];
+
+        for (int i = 0; i < uuidList.size(); i++) {
+            UUID uuid = uuidList.get(i);
+            longArray[i * 2] = uuid.getMostSignificantBits();
+            longArray[i * 2 + 1] = uuid.getLeastSignificantBits();
+        }
+
+        pdc.set(PDC_WORLD_ENTITY_LIST_ID, PersistentDataType.LONG_ARRAY, longArray);
     }
 
 }
