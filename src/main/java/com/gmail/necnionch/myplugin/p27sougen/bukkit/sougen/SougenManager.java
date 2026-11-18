@@ -7,6 +7,7 @@ import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
+import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
 import org.bukkit.*;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
@@ -16,6 +17,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
@@ -94,6 +96,17 @@ public class SougenManager implements Listener {
     }
 
     public void refreshPlayer(Player player) {
+        refreshPlayer(player, map -> IntStream.range(0, map.schematic().positionList().size())
+                .boxed()
+                .collect(Collectors.toMap(i -> map.schematic().positionList().get(i), i -> map.schematic().blockDataList().get(i))));
+    }
+
+    public void refreshPlayer(Player player, SougenMap.ChunkKey chunk) {
+        refreshPlayer(player, map -> map.chunkCache().get(chunk).stream()
+                .collect(Collectors.toMap(bp -> bp, bp -> map.schematic().blockDataList().get(map.schematic().positionList().indexOf(bp)))));
+    }
+
+    private void refreshPlayer(Player player, Function<SougenMap, Map<BlockPosition, BlockData>> blocks) {
         if (!player.isOnline()) return;
 
         String mapId = players.get(player);
@@ -106,9 +119,7 @@ public class SougenManager implements Listener {
         if (!world.getUID().equals(player.getWorld().getUID())) return;
 
         //noinspection UnstableApiUsage
-        player.sendMultiBlockChange(IntStream.range(0, map.schematic().positionList().size())
-                .boxed()
-                .collect(Collectors.toMap(i -> map.schematic().positionList().get(i).toPaper(), i -> map.schematic().blockDataList().get(i))));
+        player.sendMultiBlockChange(BlockPosition.mapToPaper(blocks.apply(map)));
     }
 
     public void removePlayer(Player player, boolean animate) {
@@ -120,13 +131,15 @@ public class SougenManager implements Listener {
         SougenMap map = maps.get(mapId);
         if (map == null) return;
 
-        World mapWorld = plugin.getServer().getWorld(map.destWorldId());
-        if (mapWorld != null) {
-            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(mapWorld).stream()
-                    .map(mapWorld::getEntity)
-                    .filter(Objects::nonNull)
-                    .toList();
-            updateEntityVisibility(player, mapId, taggedEntities, false);
+        if (!animate && plugin.isEnabled()) {
+            World mapWorld = plugin.getServer().getWorld(map.destWorldId());
+            if (mapWorld != null) {
+                List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(mapWorld).stream()
+                        .map(mapWorld::getEntity)
+                        .filter(Objects::nonNull)
+                        .toList();
+                updateEntityVisibility(player, mapId, taggedEntities, false);
+            }
         }
 
         World world = player.getWorld();
@@ -217,6 +230,35 @@ public class SougenManager implements Listener {
     }
 
     @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        World world = player.getWorld();
+
+        refreshPlayer(player);
+
+        String mapId = players.get(player);  // TODO: Playerオブジェクトを更新する必要あり
+        if (mapId == null) {
+            // sougenなし
+            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
+                    .map(world::getEntity)
+                    .filter(Objects::nonNull)
+                    .toList();
+            updateEntityVisibility(player, null, taggedEntities, true);
+            return;
+        }
+
+        SougenMap map = maps.get(mapId);
+        if (map == null) return;
+        if (!map.destWorldId().equals(player.getWorld().getUID())) return;
+
+        List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
+                .map(world::getEntity)
+                .filter(Objects::nonNull)
+                .toList();
+        updateEntityVisibility(player, mapId, taggedEntities, true);
+    }
+
+    @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         cancelAllAnimations(event.getPlayer());
         removePlayer(event.getPlayer(), false);
@@ -226,6 +268,18 @@ public class SougenManager implements Listener {
     public void onPlayerWorldChange(PlayerChangedWorldEvent event) {
         cancelAllAnimations(event.getPlayer());
         removePlayer(event.getPlayer(), false);
+    }
+
+    @EventHandler
+    public void onPlayerChunkLoad(PlayerChunkLoadEvent event) {
+        Player player = event.getPlayer();
+        SougenMap map = maps.get(players.get(player));
+        if (map == null) return;
+
+        if (!map.destWorldId().equals(player.getWorld().getUID())) return;
+
+        Chunk chunk = event.getChunk();
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> refreshPlayer(player, new SougenMap.ChunkKey(chunk.getX(), chunk.getZ())), 1L);
     }
 
     // --- Animation & Entity Processing ---
@@ -359,11 +413,11 @@ public class SougenManager implements Listener {
         playerAnimationTasks.put(player, task.getTaskId());
     }
 
-    private void updateEntityVisibility(Player player, String mapId, List<Entity> entities, boolean apply) {
+    private void updateEntityVisibility(Player player, @Nullable String mapId, List<Entity> entities, boolean apply) {
         for (Entity entity : entities) {
             PersistentDataContainer pdc = entity.getPersistentDataContainer();
             String entityMapId = pdc.getOrDefault(PDC_ENTITY_MAP_ID, PersistentDataType.STRING, "");
-            boolean matchesMap = mapId.equals(entityMapId);
+            boolean matchesMap = Optional.ofNullable(mapId).orElse("").equals(entityMapId);
 
             if (apply) {
                 if (entityMapId.isEmpty() || matchesMap) {
