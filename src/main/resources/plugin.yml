@@ -10,6 +10,10 @@ depend:
   - WorldEdit
   - ProtocolLib
 
+softdepend:
+  - DecentHolograms
+  - Multiverse-Portals
+
 commands:
   sougen:
     permission: p27sougen.command.sougen

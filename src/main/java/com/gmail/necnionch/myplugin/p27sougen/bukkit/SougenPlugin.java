@@ -3,6 +3,8 @@ package com.gmail.necnionch.myplugin.p27sougen.bukkit;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenSchematic;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -39,6 +41,14 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         manager.setup();
         addSougenSchematics();
         getServer().getPluginManager().registerEvents(this, this);
+
+        if (Holograms.isHooked()) {
+            getLogger().info("Hologram API Hooked!");
+        }
+        if (Portals.isHooked()) {
+            Portals.setup(this);
+            getLogger().info("Portal API Hooked!");
+        }
     }
 
     @Override
@@ -119,8 +129,12 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         if (manager.containsPlayer(player)) {
             manager.removePlayer(player, true);
+            Holograms.showHologram(player, "test_holo");
+            Portals.blockedNames().add("test_portal");
         } else {
             manager.addPlayer(player, "test", true);
+            Holograms.hideHologram(player, "test_holo");
+            Portals.blockedNames().remove("test_portal");
         }
     }
 
