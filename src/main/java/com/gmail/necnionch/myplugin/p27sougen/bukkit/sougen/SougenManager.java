@@ -12,6 +12,7 @@ import org.bukkit.*;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
@@ -73,10 +74,7 @@ public class SougenManager implements Listener {
 
         World world = plugin.getServer().getWorld(destWorldId);
         if (world != null) {
-            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
-                    .map(world::getEntity)
-                    .filter(Objects::nonNull)
-                    .toList();
+            List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
             for (Player player : world.getPlayers()) {
                 updateEntityVisibility(player, id, taggedEntities, id.equals(players.get(player)));
             }
@@ -199,14 +197,7 @@ public class SougenManager implements Listener {
             if (world == null) continue;
             if (world.getPlayers().isEmpty()) continue;
 
-            List<UUID> entities = loadTaggedEntitiesIdFrom(world);
-            if (entities == null || entities.isEmpty()) continue;
-
-            for (UUID entityId : entities) {
-                Entity entity = world.getEntity(entityId);
-                if (entity == null) continue;
-                world.getPlayers().forEach(p -> p.showEntity(plugin, entity));
-            }
+            loadTaggedEntitiesFrom(world).forEach(entity -> world.getPlayers().forEach(p -> p.showEntity(plugin, entity)));
         }
         maps.clear();
     }
@@ -234,9 +225,14 @@ public class SougenManager implements Listener {
         Player player = event.getPlayer();
         World world = player.getWorld();
 
-        refreshPlayer(player);
+        PersistentDataContainer pdc = player.getPersistentDataContainer();
+        String mapId = pdc.get(PDC_ENTITY_MAP_ID, PersistentDataType.STRING);
 
-        String mapId = players.get(player);  // TODO: Playerオブジェクトを更新する必要あり
+        if (mapId != null) {
+            players.put(player, mapId);
+        }
+
+        refreshPlayer(player);
         if (mapId == null) {
             // sougenなし
             List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
@@ -251,17 +247,24 @@ public class SougenManager implements Listener {
         if (map == null) return;
         if (!map.destWorldId().equals(player.getWorld().getUID())) return;
 
-        List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
-                .map(world::getEntity)
-                .filter(Objects::nonNull)
-                .toList();
+        List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
         updateEntityVisibility(player, mapId, taggedEntities, true);
     }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        cancelAllAnimations(event.getPlayer());
-        removePlayer(event.getPlayer(), false);
+        Player player = event.getPlayer();
+
+        String mapId = players.get(player);
+        PersistentDataContainer pdc = player.getPersistentDataContainer();
+        if (mapId != null) {
+            pdc.set(PDC_ENTITY_MAP_ID, PersistentDataType.STRING, mapId);
+        } else {
+            pdc.remove(PDC_ENTITY_MAP_ID);
+        }
+
+        cancelAllAnimations(player);
+        removePlayer(player, false);
     }
 
     @EventHandler
@@ -401,7 +404,7 @@ public class SougenManager implements Listener {
             }
 
             if (tick == 0) {
-                player.playSound(player.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, .3f, 2f);
+                player.playSound(player.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, .75f, 2f);
             }
 
             tick++;
@@ -508,7 +511,7 @@ public class SougenManager implements Listener {
 
             List<Entity> matchedEntities = new ArrayList<>();
             world.getNearbyEntities(scanBox).forEach(entity -> {
-                if (entity.equals(player)) return;
+                if (entity.getType() == EntityType.PLAYER) return;
 
                 double distSq = entity.getLocation().distanceSquared(centerLocation);
                 if (distSq >= innerRadiusSq && distSq <= outerRadiusSq) {
@@ -563,6 +566,14 @@ public class SougenManager implements Listener {
     public @Nullable String getSougenEntityMapId(Entity entity) {
         PersistentDataContainer pdc = entity.getPersistentDataContainer();
         return pdc.has(PDC_ENTITY_MAP_ID, PersistentDataType.STRING) ? pdc.get(PDC_ENTITY_MAP_ID, PersistentDataType.STRING) : null;
+    }
+
+    public List<Entity> loadTaggedEntitiesFrom(World world) {
+        return loadTaggedEntitiesIdFrom(world).stream()
+                .map(world::getEntity)
+                .filter(Objects::nonNull)
+                .filter(e -> e.getType() != EntityType.PLAYER)
+                .toList();
     }
 
     public List<UUID> loadTaggedEntitiesIdFrom(World world) {
