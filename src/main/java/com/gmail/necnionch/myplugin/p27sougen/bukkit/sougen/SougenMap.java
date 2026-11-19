@@ -4,7 +4,10 @@ import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 public record SougenMap(
@@ -12,11 +15,12 @@ public record SougenMap(
         SougenSchematic schematic,
         UUID destWorldId,
         BlockPosition destPosition,
+        Config config,
         Multimap<ChunkKey, BlockPosition> chunkCache
 ) {
 
-    public SougenMap(String id, SougenSchematic schematic, UUID destWorldId, BlockPosition destPosition) {
-        this(id, schematic, destWorldId, destPosition, createChunkCache(schematic));
+    public SougenMap(String id, SougenSchematic schematic, UUID destWorldId, BlockPosition destPosition, Config config) {
+        this(id, schematic, destWorldId, destPosition, config, createChunkCache(schematic));
     }
 
     private static Multimap<ChunkKey, BlockPosition> createChunkCache(SougenSchematic schematic) {
@@ -31,6 +35,15 @@ public record SougenMap(
         public static ChunkKey of(BlockPosition bp) {
             return new ChunkKey(bp.x() >> 4, bp.z() >> 4);
         }
+    }
+
+    public record Config(
+            String id,
+            @Nullable String name,
+            Path filePath,
+            List<String> hologramIds,
+            List<String> portalIds
+    ) {
     }
 
 }

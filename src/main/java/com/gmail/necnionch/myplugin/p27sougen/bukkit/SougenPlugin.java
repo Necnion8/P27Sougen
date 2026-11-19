@@ -1,14 +1,13 @@
 package com.gmail.necnionch.myplugin.p27sougen.bukkit;
 
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
-import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenSchematic;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
-import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
@@ -27,28 +26,26 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.util.Optional;
-import java.util.logging.Level;
 
 public final class SougenPlugin extends JavaPlugin implements Listener {
 
-    private final SougenManager manager = new SougenManager(this, getLogger());
+    private final SougenConfig config = new SougenConfig(this);
+    private final SougenManager manager = new SougenManager(this, getLogger(), config);
 
     @Override
     public void onEnable() {
-        manager.setup();
-        addSougenSchematics();
-        getServer().getPluginManager().registerEvents(this, this);
-
-        if (Holograms.isHooked()) {
+        if (Holograms.available()) {
             getLogger().info("Hologram API Hooked!");
         }
-        if (Portals.isHooked()) {
-            Portals.setup(this);
+        if (Portals.register(this)) {
             getLogger().info("Portal API Hooked!");
         }
+
+        config.load();
+        manager.loadMaps();
+        getServer().getPluginManager().registerEvents(this, this);
+        manager.setup();
     }
 
     @Override
@@ -92,27 +89,6 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
-    private void addSougenSchematics() {
-        Path schemFilePath = Path.of("./plugins/WorldEdit/schematics/sougen.schem");
-        SougenSchematic schematic;
-        try {
-            schematic = SougenSchematic.fromSchematicFile(schemFilePath);
-        } catch (IOException e) {
-            getLogger().log(Level.WARNING, "Failed to load schematic: " + schemFilePath, e);
-            return;
-        }
-
-        BlockPosition position = new BlockPosition(120, 63, 23);
-        World world = getServer().getWorld("lobby");
-        if (world == null) {
-            getLogger().warning("Not exists world: " + "lobby");
-            return;
-        }
-
-        manager.addMap("test", schematic, world.getUID(), position);
-    }
-
-
     @EventHandler
     public void onInteract(PlayerInteractEvent event) {
         if (!event.getAction().isRightClick() || !EquipmentSlot.HAND.equals(event.getHand()))
@@ -129,12 +105,8 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         if (manager.containsPlayer(player)) {
             manager.removePlayer(player, true);
-            Holograms.showHologram(player, "test_holo");
-            Portals.blockedNames().add("test_portal");
         } else {
             manager.addPlayer(player, "test", true);
-            Holograms.hideHologram(player, "test_holo");
-            Portals.blockedNames().remove("test_portal");
         }
     }
 

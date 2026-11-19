@@ -22,12 +22,12 @@ public class Holograms {
     private Holograms() {}
 
 
-    public static boolean isHooked() {
+    public static boolean available() {
         return HAS_CLASS && Bukkit.getServer().getPluginManager().isPluginEnabled("DecentHolograms");
     }
 
     public static boolean showHologram(Player player, String hologramId) {
-        if (!isHooked()) return false;
+        if (!available()) return false;
 
         Hologram hologram = DHAPI.getHologram(hologramId);
         if (hologram == null) return false;
@@ -37,7 +37,7 @@ public class Holograms {
     }
 
     public static boolean hideHologram(Player player, String hologramId) {
-        if (!isHooked()) return false;
+        if (!available()) return false;
 
         Hologram hologram = DHAPI.getHologram(hologramId);
         if (hologram == null) return false;

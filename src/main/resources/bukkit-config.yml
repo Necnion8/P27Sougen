@@ -1,0 +1,14 @@
+
+# schematicを展開する基準となる座標とワールド
+location: 0,60,0,lobby
+
+maps:
+  test:  # id
+    name: "テスト"
+    # schematicファイルの名前 (拡張子を含む)
+    # 未指定時は "(id).schem" を使用 (./P27Sougen/maps/(id).schem)
+    file: null
+    # このマップ表示中に表示するホログラムの名前
+    holograms: []
+    # このマップ表示中に有効なポータルの名前
+    portals: []

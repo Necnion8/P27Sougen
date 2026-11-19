@@ -4,7 +4,10 @@ import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.events.*;
 import com.comphenix.protocol.wrappers.WrappedBlockData;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
@@ -29,10 +32,13 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.BoundingBox;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -48,14 +54,16 @@ public class SougenManager implements Listener {
 
     private final JavaPlugin plugin;
     private final Logger logger;
+    private final SougenConfig config;
     private final Map<String, SougenMap> maps = new HashMap<>();
     private final Map<Player, String> players = new HashMap<>();
     private final ListMultimap<Player, Integer> playerAnimationTasks = ArrayListMultimap.create();
     private PacketListener packetListener;
 
-    public SougenManager(JavaPlugin plugin, Logger logger) {
+    public SougenManager(JavaPlugin plugin, Logger logger, SougenConfig config) {
         this.plugin = plugin;
         this.logger = logger;
+        this.config = config;
         PDC_ENTITY_MAP_ID = new NamespacedKey(plugin, "map_id");
         PDC_WORLD_ENTITY_LIST_ID = new NamespacedKey(plugin, "entities");
     }
@@ -64,21 +72,13 @@ public class SougenManager implements Listener {
         return logger;
     }
 
-    public void addMap(String id, SougenSchematic schematic, UUID destWorldId, BlockPosition destPosition) {
+    public void addMap(String id, SougenSchematic schematic, UUID destWorldId, BlockPosition destPosition, SougenMap.Config config) {
         List<BlockPosition> positionList = schematic.positionList().stream()
                 .map(bp -> new BlockPosition(destPosition.x() + bp.x(), destPosition.y() + bp.y(), destPosition.z() + bp.z()))
                 .toList();
         SougenSchematic fixed = new SougenSchematic(positionList, schematic.blockDataList(), schematic.packetBlockDataList());
-        SougenMap map = new SougenMap(id, fixed, destWorldId, destPosition);
+        SougenMap map = new SougenMap(id, fixed, destWorldId, destPosition, config);
         maps.put(id, map);
-
-        World world = plugin.getServer().getWorld(destWorldId);
-        if (world != null) {
-            List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
-            for (Player player : world.getPlayers()) {
-                updateEntityVisibility(player, id, taggedEntities, id.equals(players.get(player)));
-            }
-        }
     }
 
     public void addPlayer(Player player, String mapId, boolean animate) {
@@ -89,22 +89,23 @@ public class SougenManager implements Listener {
                 playMapApplyAnimation(player, map, DEFAULT_THICKNESS);
             }
         } else {
-            refreshPlayer(player);
+            sendMap(player);
         }
+        updateHologramsAndPortals(player);
     }
 
-    public void refreshPlayer(Player player) {
-        refreshPlayer(player, map -> IntStream.range(0, map.schematic().positionList().size())
+    public void sendMap(Player player) {
+        sendMap(player, map -> IntStream.range(0, map.schematic().positionList().size())
                 .boxed()
                 .collect(Collectors.toMap(i -> map.schematic().positionList().get(i), i -> map.schematic().blockDataList().get(i))));
     }
 
-    public void refreshPlayer(Player player, SougenMap.ChunkKey chunk) {
-        refreshPlayer(player, map -> map.chunkCache().get(chunk).stream()
+    public void sendMap(Player player, SougenMap.ChunkKey chunk) {
+        sendMap(player, map -> map.chunkCache().get(chunk).stream()
                 .collect(Collectors.toMap(bp -> bp, bp -> map.schematic().blockDataList().get(map.schematic().positionList().indexOf(bp)))));
     }
 
-    private void refreshPlayer(Player player, Function<SougenMap, Map<BlockPosition, BlockData>> blocks) {
+    private void sendMap(Player player, Function<SougenMap, Map<BlockPosition, BlockData>> blocks) {
         if (!player.isOnline()) return;
 
         String mapId = players.get(player);
@@ -129,7 +130,7 @@ public class SougenManager implements Listener {
         SougenMap map = maps.get(mapId);
         if (map == null) return;
 
-        if (!animate && plugin.isEnabled()) {
+        if (!animate) {
             World mapWorld = plugin.getServer().getWorld(map.destWorldId());
             if (mapWorld != null) {
                 List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(mapWorld).stream()
@@ -139,6 +140,7 @@ public class SougenManager implements Listener {
                 updateEntityVisibility(player, mapId, taggedEntities, false);
             }
         }
+        updateHologramsAndPortals(player);
 
         World world = player.getWorld();
         if (!world.getUID().equals(map.destWorldId())) return;
@@ -188,18 +190,67 @@ public class SougenManager implements Listener {
         if (packetListener != null) {
             ProtocolLibrary.getProtocolManager().removePacketListener(packetListener);
         }
+        clearAll();
+    }
 
-        new ArrayList<>(players.keySet()).forEach(player -> removePlayer(player, false));
-        players.clear();
+    private void clearAll() {
+        for (Player player : plugin.getServer().getOnlinePlayers()) {
+            cancelAllAnimations(player);
+            clearHologramsAndPortals(player);
+        }
 
         for (SougenMap map : maps.values()) {
             World world = plugin.getServer().getWorld(map.destWorldId());
             if (world == null) continue;
             if (world.getPlayers().isEmpty()) continue;
 
+            for (Player player : world.getPlayers()) {
+                player.sendBlockChanges(map.schematic().positionList().stream()
+                        .map(bp -> world.getBlockState(bp.x(), bp.y(), bp.z()))
+                        .toList());
+            }
             loadTaggedEntitiesFrom(world).forEach(entity -> world.getPlayers().forEach(p -> p.showEntity(plugin, entity)));
         }
+
+        players.clear();
         maps.clear();
+    }
+
+    public void loadMaps() {
+        clearAll();
+
+        World world = Optional.ofNullable(config.getWorld())
+                .map(name -> plugin.getServer().getWorld(name))
+                .orElse(null);
+        if (world == null) {
+            getLogger().severe("World " + config.getWorld() + " not loaded!");
+            return;
+        }
+
+        for (Map.Entry<String, SougenMap.Config> e : config.getMaps().entrySet()) {
+            String mapId = e.getKey();
+            SougenMap.Config mapConfig = e.getValue();
+
+            if (!Files.isRegularFile(mapConfig.filePath())) {
+                getLogger().warning("Schematic file not exists: " + mapConfig.filePath());
+                continue;
+            }
+            SougenSchematic schematic;
+            try {
+                schematic = SougenSchematic.fromSchematicFile(mapConfig.filePath());
+            } catch (IOException ex) {
+                getLogger().log(Level.WARNING, "Failed to load schematic: " + mapConfig.filePath(), ex);
+                continue;
+            }
+
+            addMap(mapId, schematic, world.getUID(), config.getCenter(), mapConfig);
+        }
+
+        List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
+        for (Player player : world.getPlayers()) {
+            updateEntityVisibility(player, players.get(player), taggedEntities, true);
+            updateHologramsAndPortals(player);
+        }
     }
 
     private void onBlockChangeSending(PacketEvent event) {
@@ -232,7 +283,8 @@ public class SougenManager implements Listener {
             players.put(player, mapId);
         }
 
-        refreshPlayer(player);
+        sendMap(player);
+        updateHologramsAndPortals(player);
         if (mapId == null) {
             // sougenなし
             List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
@@ -282,7 +334,7 @@ public class SougenManager implements Listener {
         if (!map.destWorldId().equals(player.getWorld().getUID())) return;
 
         Chunk chunk = event.getChunk();
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> refreshPlayer(player, new SougenMap.ChunkKey(chunk.getX(), chunk.getZ())), 1L);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> sendMap(player, new SougenMap.ChunkKey(chunk.getX(), chunk.getZ())), 1L);
     }
 
     // --- Animation & Entity Processing ---
@@ -307,7 +359,7 @@ public class SougenManager implements Listener {
         List<BlockPosition> posList = map.schematic().positionList();
 
         List<AnimationWave<BlockData>> waves = new ArrayList<>(sortBlockAnimation(
-                world, centerLoc, player, posList,
+                world, centerLoc, posList,
                 BlockResolver.fromBlockDataList(map.schematic().blockDataList()),
                 thickness
         ));
@@ -338,7 +390,7 @@ public class SougenManager implements Listener {
         List<BlockPosition> posList = map.schematic().positionList();
 
         List<AnimationWave<BlockState>> waves = new ArrayList<>(sortBlockAnimation(
-                world, centerLoc, player, posList,
+                world, centerLoc, posList,
                 BlockResolver.fromWorld(world),
                 thickness
         ));
@@ -349,7 +401,7 @@ public class SougenManager implements Listener {
                 player.sendMultiBlockChange(BlockPosition.mapToPaper(createStoneMap(wave.blocks(), BlockState::getType)));
             } else {
                 Map<BlockPosition, BlockData> originalMap = wave.blocks().entrySet().stream()
-                        .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().getBlockData()));
+                        .collect(Collectors.toMap(java.util.Map.Entry::getKey, entry -> entry.getValue().getBlockData()));
                 //noinspection UnstableApiUsage
                 player.sendMultiBlockChange(BlockPosition.mapToPaper(originalMap));
                 if (!wave.entities().isEmpty()) {
@@ -456,7 +508,7 @@ public class SougenManager implements Listener {
         List<BlockPosition> blocks = blockPositions.entrySet().stream()
                 .filter(e -> map.destPosition().y() - 2 <= e.getKey().y())
                 .filter(e -> filter.test(e.getValue()))
-                .map(Map.Entry::getKey)
+                .map(java.util.Map.Entry::getKey)
                 .toList();
         if (blocks.isEmpty()) return;
 
@@ -475,7 +527,7 @@ public class SougenManager implements Listener {
     }
 
     private <B> Collection<AnimationWave<B>> sortBlockAnimation(
-            World world, Location centerLocation, Player player, List<BlockPosition> posList,
+            World world, Location centerLocation, List<BlockPosition> posList,
             BlockResolver<B> blockResolver, double thickness) {
 
         Map<Double, Map<BlockPosition, B>> distanceGroups = new TreeMap<>();
@@ -527,7 +579,7 @@ public class SougenManager implements Listener {
 
     private <B> Map<BlockPosition, BlockData> createStoneMap(Map<BlockPosition, B> blocks, Function<B, Material> type) {
         return blocks.entrySet().stream()
-                .collect(Collectors.toMap(Map.Entry::getKey, e -> type.apply(e.getValue()).isCollidable() ? STONE_BLOCK_DATA : AIR_BLOCK_DATA));
+                .collect(Collectors.toMap(java.util.Map.Entry::getKey, e -> type.apply(e.getValue()).isCollidable() ? STONE_BLOCK_DATA : AIR_BLOCK_DATA));
     }
 
     private record AnimationWave<B>(Map<BlockPosition, B> blocks, List<Entity> entities, double radius) {
@@ -613,6 +665,46 @@ public class SougenManager implements Listener {
         }
 
         pdc.set(PDC_WORLD_ENTITY_LIST_ID, PersistentDataType.LONG_ARRAY, longArray);
+    }
+
+    // --- Hologram & Portal ---
+
+    /**
+     * 指定されたプレイヤーの map 設定状態に基づいて、ホログラムとポータルの有効性を変更します
+     */
+    private void updateHologramsAndPortals(Player player) {
+        SougenMap map = Optional.ofNullable(players.get(player)).map(maps::get).orElse(null);
+
+        if (Holograms.available()) {
+            for (String hologramId : config.getAllHologramIds()) {
+                if (map != null && map.config().hologramIds().contains(hologramId)) {
+                    Holograms.showHologram(player, hologramId);
+                } else {
+                    Holograms.hideHologram(player, hologramId);
+                }
+            }
+        }
+
+        if (Portals.available()) {
+            Set<String> excludePortals = new HashSet<>(config.getAllPortalIds());
+            if (map != null) {
+                map.config().portalIds().forEach(excludePortals::remove);
+            }
+            Portals.blockedNames().replaceValues(player, excludePortals);
+        }
+    }
+
+    /**
+     * 指定されたプレイヤーに基づく、ホログラムとポータルの有効性変更をリセットします
+     */
+    private void clearHologramsAndPortals(Player player) {
+        if (Holograms.available()) {
+            config.getAllHologramIds().forEach(hologramId -> Holograms.showHologram(player, hologramId));
+        }
+
+        if (Portals.available()) {
+            Portals.blockedNames().removeAll(player);
+        }
     }
 
 }
