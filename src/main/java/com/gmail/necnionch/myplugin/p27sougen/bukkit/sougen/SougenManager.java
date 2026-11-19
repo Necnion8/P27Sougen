@@ -5,6 +5,10 @@ import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.events.*;
 import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.event.PlayerAddSougenEvent;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.event.PlayerEnterSougenEvent;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.event.PlayerLeaveSougenEvent;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.event.PlayerRemoveSougenEvent;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
@@ -58,7 +62,7 @@ public class SougenManager implements Listener {
     private final Map<String, SougenMap> maps = new HashMap<>();
     private final Map<Player, String> players = new HashMap<>();
     private final ListMultimap<Player, Integer> playerAnimationTasks = ArrayListMultimap.create();
-    private PacketListener packetListener;
+    private @Nullable PacketListener packetListener;
 
     public SougenManager(JavaPlugin plugin, Logger logger, SougenConfig config) {
         this.plugin = plugin;
@@ -72,6 +76,10 @@ public class SougenManager implements Listener {
         return logger;
     }
 
+    public Map<String, SougenMap> getMaps() {
+        return Collections.unmodifiableMap(maps);
+    }
+
     public void addMap(String id, SougenSchematic schematic, UUID destWorldId, BlockPosition destPosition, SougenMap.Config config) {
         List<BlockPosition> positionList = schematic.positionList().stream()
                 .map(bp -> new BlockPosition(destPosition.x() + bp.x(), destPosition.y() + bp.y(), destPosition.z() + bp.z()))
@@ -83,14 +91,19 @@ public class SougenManager implements Listener {
 
     public void addPlayer(Player player, String mapId, boolean animate) {
         players.put(player, mapId);
-        if (animate) {
-            SougenMap map = maps.get(mapId);
-            if (map != null) {
-                playMapApplyAnimation(player, map, DEFAULT_THICKNESS);
-            }
-        } else {
-            sendMap(player);
+        SougenMap map = maps.get(mapId);
+
+        plugin.getServer().getPluginManager().callEvent(new PlayerAddSougenEvent(player, mapId, map));
+        if (map != null) {
+            plugin.getServer().getPluginManager().callEvent(new PlayerEnterSougenEvent(player, map));
         }
+
+        if (!animate) {
+            sendMap(player);
+        } else if (map != null) {
+            playMapApplyAnimation(player, map, DEFAULT_THICKNESS);
+        }
+
         updateHologramsAndPortals(player);
     }
 
@@ -125,10 +138,12 @@ public class SougenManager implements Listener {
         String mapId = players.remove(player);
         if (mapId == null) return;
 
-        if (!player.isOnline()) return;
-
         SougenMap map = maps.get(mapId);
+        plugin.getServer().getPluginManager().callEvent(new PlayerRemoveSougenEvent(player, mapId, map));
         if (map == null) return;
+
+        plugin.getServer().getPluginManager().callEvent(new PlayerLeaveSougenEvent(player, map));
+        if (!player.isOnline()) return;
 
         if (!animate) {
             World mapWorld = plugin.getServer().getWorld(map.destWorldId());
@@ -195,6 +210,15 @@ public class SougenManager implements Listener {
 
     private void clearAll() {
         for (Player player : plugin.getServer().getOnlinePlayers()) {
+            String mapId = players.get(player);
+            if (mapId != null) {
+                SougenMap map = maps.get(mapId);
+                plugin.getServer().getPluginManager().callEvent(new PlayerRemoveSougenEvent(player, mapId, map));
+                if (map != null) {
+                    plugin.getServer().getPluginManager().callEvent(new PlayerLeaveSougenEvent(player, map));
+                }
+            }
+
             cancelAllAnimations(player);
             clearHologramsAndPortals(player);
         }

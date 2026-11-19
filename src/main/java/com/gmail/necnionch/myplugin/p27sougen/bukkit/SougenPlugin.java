@@ -44,8 +44,8 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
 
         config.load();
         manager.loadMaps();
-        getServer().getPluginManager().registerEvents(this, this);
         manager.setup();
+        getServer().getPluginManager().registerEvents(this, this);
     }
 
     @Override
