@@ -13,6 +13,7 @@ depend:
 softdepend:
   - DecentHolograms
   - Multiverse-Portals
+  - BungeePortals2
 
 commands:
   sougen:
