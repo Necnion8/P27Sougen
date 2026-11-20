@@ -170,6 +170,11 @@ public class SougenManager implements Listener {
         }
     }
 
+    public SougenMap getPlayerMap(Player player) {
+        String mapId = players.get(player);
+        return mapId != null ? maps.get(mapId) : null;
+    }
+
     public boolean containsPlayer(Player player) {
         return players.containsKey(player);
     }

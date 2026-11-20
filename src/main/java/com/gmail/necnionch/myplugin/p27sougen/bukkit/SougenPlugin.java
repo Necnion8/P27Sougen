@@ -1,8 +1,10 @@
 package com.gmail.necnionch.myplugin.p27sougen.bukkit;
 
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.listener.PlayerFloatingListener;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.FloatingKickController;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
 import net.kyori.adventure.text.Component;
@@ -26,31 +28,52 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public final class SougenPlugin extends JavaPlugin implements Listener {
 
     private final SougenConfig config = new SougenConfig(this);
     private final SougenManager manager = new SougenManager(this, getLogger(), config);
+    private final List<Runnable> unregisters = new ArrayList<>();
 
     @Override
     public void onEnable() {
         if (Holograms.available()) {
             getLogger().info("Hologram API Hooked!");
         }
-        if (Portals.register(this)) {
+        Runnable unregister = Portals.register(this);
+        if (unregister != null) {
             getLogger().info("Portal API Hooked!");
+            unregisters.add(unregister);
         }
 
         config.load();
         manager.loadMaps();
         manager.setup();
         getServer().getPluginManager().registerEvents(this, this);
+        setupPlayerFloatings();
     }
 
     @Override
     public void onDisable() {
         manager.shutdown();
+        unregisters.reversed().forEach(Runnable::run);
+        unregisters.clear();
+    }
+
+    private void setupPlayerFloatings() {
+        if (getServer().getAllowFlight()) return;
+        FloatingKickController controller;
+        try {
+            controller = FloatingKickController.getOrCreate();
+        } catch (ReflectiveOperationException e) {
+            getLogger().warning("Failed to initialize FloatingKickController. Floating kick protection is unavailable. You may need to enable 'allow-flight' in server.properties.");
+            getLogger().warning("[Cause] " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return;
+        }
+        unregisters.add(PlayerFloatingListener.register(this, manager, controller));
     }
 
     @Override

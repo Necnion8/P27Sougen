@@ -15,25 +15,27 @@ import org.jetbrains.annotations.Nullable;
 import org.mvplugins.multiverse.portals.MVPortal;
 import org.mvplugins.multiverse.portals.event.MVPortalEvent;
 
+import java.util.HashSet;
+import java.util.Set;
+
 @SuppressWarnings("UnusedReturnValue")
 public class Portals {
 
     private static final Multimap<Player, String> BLOCKED_NAMES = ArrayListMultimap.create();
-    private static @Nullable Listener MVP_LISTENER;
-    private static @Nullable Listener BP2_LISTENER;
+    private static boolean HAS_LISTENER;
 
     private Portals() {}
 
     public static boolean available() {
-        return MVP_LISTENER != null || BP2_LISTENER != null;
+        return HAS_LISTENER;
     }
 
-    public static boolean register(JavaPlugin plugin) {
-        unregister();
+    public static @Nullable Runnable register(JavaPlugin plugin) {
         PluginManager mgr = Bukkit.getServer().getPluginManager();
+        Set<Listener> listeners = new HashSet<>();
 
         if (mgr.isPluginEnabled("Multiverse-Portals")) {
-            MVP_LISTENER = new Listener() {
+            listeners.add(new Listener() {
                 @EventHandler
                 public void onPortal(MVPortalEvent event) {
                     Player player = event.getTeleportee();
@@ -42,12 +44,11 @@ public class Portals {
                         event.setCancelled(true);
                     }
                 }
-            };
-            mgr.registerEvents(MVP_LISTENER, plugin);
+            });
         }
 
         if (mgr.isPluginEnabled("BungeePortals2")) {
-            BP2_LISTENER = new Listener() {
+            listeners.add(new Listener() {
                 @EventHandler
                 public void onPortal(BungeePortalEvent event) {
                     Player player = event.getPlayer();
@@ -56,22 +57,15 @@ public class Portals {
                         event.setCancelled(true);
                     }
                 }
-            };
-            mgr.registerEvents(BP2_LISTENER, plugin);
+            });
         }
 
-        return available();
-    }
+        HAS_LISTENER = false;
+        if (listeners.isEmpty()) return null;
 
-    public static void unregister() {
-        if (MVP_LISTENER != null) {
-            HandlerList.unregisterAll(MVP_LISTENER);
-            MVP_LISTENER = null;
-        }
-        if (BP2_LISTENER != null) {
-            HandlerList.unregisterAll(BP2_LISTENER);
-            BP2_LISTENER = null;
-        }
+        HAS_LISTENER = true;
+        listeners.forEach(listener -> mgr.registerEvents(listener, plugin));
+        return () -> listeners.forEach(HandlerList::unregisterAll);
     }
 
     public static Multimap<Player, String> blockedNames() {
