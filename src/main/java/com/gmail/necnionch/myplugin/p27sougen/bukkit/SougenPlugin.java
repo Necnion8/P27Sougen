@@ -3,6 +3,7 @@ package com.gmail.necnionch.myplugin.p27sougen.bukkit;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.listener.PlayerFloatingListener;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenMap;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.FloatingKickController;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
@@ -126,10 +127,12 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
 
         event.setCancelled(true);
         Player player = event.getPlayer();
-        if (manager.containsPlayer(player)) {
-            manager.removePlayer(player, true);
+        SougenMap map = manager.getPlayerMap(player);
+        if (map != null && "test0".equals(map.id())) {
+//            manager.removePlayer(player, true);
+            manager.addPlayer(player, "test1", true);
         } else {
-            manager.addPlayer(player, "test", true);
+            manager.addPlayer(player, "test0", true);
         }
     }
 
