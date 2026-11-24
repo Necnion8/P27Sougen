@@ -11,11 +11,11 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.jetbrains.annotations.Nullable;
 import org.mvplugins.multiverse.portals.MVPortal;
 import org.mvplugins.multiverse.portals.event.MVPortalEvent;
 
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 
 @SuppressWarnings("UnusedReturnValue")
@@ -30,7 +30,7 @@ public class Portals {
         return HAS_LISTENER;
     }
 
-    public static @Nullable Runnable register(JavaPlugin plugin) {
+    public static Optional<Runnable> register(JavaPlugin plugin) {
         PluginManager mgr = Bukkit.getServer().getPluginManager();
         Set<Listener> listeners = new HashSet<>();
 
@@ -61,11 +61,11 @@ public class Portals {
         }
 
         HAS_LISTENER = false;
-        if (listeners.isEmpty()) return null;
+        if (listeners.isEmpty()) return Optional.empty();
 
         HAS_LISTENER = true;
         listeners.forEach(listener -> mgr.registerEvents(listener, plugin));
-        return () -> listeners.forEach(HandlerList::unregisterAll);
+        return Optional.of(() -> listeners.forEach(HandlerList::unregisterAll));
     }
 
     public static Multimap<Player, String> blockedNames() {

@@ -4,10 +4,7 @@ import com.gmail.necnionch.myplugin.p27sougen.bukkit.config.SougenConfig;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.listener.PlayerFloatingListener;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenMap;
-import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.BlockPosition;
-import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.FloatingKickController;
-import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Holograms;
-import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.Portals;
+import com.gmail.necnionch.myplugin.p27sougen.bukkit.util.*;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -44,17 +41,21 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         if (Holograms.available()) {
             getLogger().info("Hologram API Hooked!");
         }
-        Runnable unregister = Portals.register(this);
-        if (unregister != null) {
+        Portals.register(this).ifPresent(handler -> {
             getLogger().info("Portal API Hooked!");
-            unregisters.add(unregister);
-        }
+            unregisters.add(handler);
+        });
 
         config.load();
         manager.loadMaps();
         manager.setup();
         getServer().getPluginManager().registerEvents(this, this);
         setupPlayerFloatings();
+
+        Placeholders.register(this, manager).ifPresent(handler -> {
+            getLogger().info("Placeholder API Hooked!");
+            unregisters.add(handler);
+        });
     }
 
     @Override
@@ -75,6 +76,10 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
             return;
         }
         unregisters.add(PlayerFloatingListener.register(this, manager, controller));
+    }
+
+    public SougenManager getManager() {
+        return manager;
     }
 
     @Override

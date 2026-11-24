@@ -216,7 +216,7 @@ public class SougenManager implements Listener {
         }
     }
 
-    public SougenMap getPlayerMap(Player player) {
+    public @Nullable SougenMap getPlayerMap(Player player) {
         String mapId = players.get(player);
         return mapId != null ? maps.get(mapId) : null;
     }

@@ -14,6 +14,7 @@ softdepend:
   - DecentHolograms
   - Multiverse-Portals
   - BungeePortals2
+  - PlaceholderAPI
 
 commands:
   sougen:
