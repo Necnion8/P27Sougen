@@ -42,6 +42,7 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -52,6 +53,9 @@ public class SougenManager implements Listener {
     private static final float DEFAULT_THICKNESS = 2.0f;
     private static final BlockData STONE_BLOCK_DATA = Bukkit.createBlockData(Material.STONE);
     private static final BlockData AIR_BLOCK_DATA = Bukkit.createBlockData(Material.AIR);
+    private static final Set<Material> HEAD_MATERIALS = Arrays.stream(Material.values()).filter(m -> m.name().endsWith("_HEAD")).collect(Collectors.toSet());
+    private static final Predicate<Material> IS_BLOCK_PREVIEW = type ->
+            type.isCollidable() && Material.LILY_PAD != type && !HEAD_MATERIALS.contains(type);
 
     public static NamespacedKey PDC_ENTITY_MAP_ID;
     public static NamespacedKey PDC_WORLD_ENTITY_LIST_ID;
@@ -148,6 +152,7 @@ public class SougenManager implements Listener {
             TileState tileState = e.getValue().tileState();
             if (tileState != null) {
                 BlockPosition pos = e.getKey();
+                //noinspection UnstableApiUsage
                 player.sendBlockUpdate(new Location(world, pos.x(), pos.y(), pos.z()), tileState);
             }
         }
@@ -354,6 +359,10 @@ public class SougenManager implements Listener {
         PersistentDataContainer pdc = player.getPersistentDataContainer();
         String mapId = pdc.get(PDC_ENTITY_MAP_ID, PersistentDataType.STRING);
 
+        if (mapId == null) {
+            mapId = config.getAutoMapId();
+        }
+
         if (mapId != null) {
             players.put(player, mapId);
         }
@@ -419,7 +428,7 @@ public class SougenManager implements Listener {
             boolean playEffects
     ) {
         public BlockData previewBlockData() {
-            return blockData.getMaterial().isCollidable() ? STONE_BLOCK_DATA : AIR_BLOCK_DATA;
+            return IS_BLOCK_PREVIEW.test(blockData.getMaterial()) ? STONE_BLOCK_DATA : AIR_BLOCK_DATA;
         }
 
         public static SougenBlockEntry ofSchematic(BlockData blockData, boolean playEffects) {
@@ -563,6 +572,7 @@ public class SougenManager implements Listener {
                         TileState tileState = e.getValue().tileState();
                         if (tileState != null) {
                             BlockPosition pos = e.getKey();
+                            //noinspection UnstableApiUsage
                             player.sendBlockUpdate(new Location(world, pos.x(), pos.y(), pos.z()), tileState);
                         }
                     }

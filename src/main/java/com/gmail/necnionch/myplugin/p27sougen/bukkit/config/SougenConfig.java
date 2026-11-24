@@ -15,7 +15,8 @@ public class SougenConfig extends BukkitConfiguration {
 
     private @Nullable String world;
     private @Nullable BlockPosition center;
-    private final Map<String, SougenMap.Config> maps = new HashMap<>();
+    private @Nullable String autoMapId;
+    private final Map<String, SougenMap.Config> maps = new LinkedHashMap<>();
     private final Set<String> hologramIds = new HashSet<>();
     private final Set<String> portalIds = new HashSet<>();
 
@@ -27,6 +28,7 @@ public class SougenConfig extends BukkitConfiguration {
     protected boolean onLoaded() {
         world = null;
         center = null;
+        autoMapId = null;
         maps.clear();
         hologramIds.clear();
         portalIds.clear();
@@ -51,26 +53,24 @@ public class SougenConfig extends BukkitConfiguration {
             }
         }
         center =  new BlockPosition(centerX, centerY, centerZ);
+        autoMapId = config.getString("auto-map");
 
-        ConfigurationSection mapsSection = config.getConfigurationSection("maps");
-        if (mapsSection != null) {
-            for (String mapId : mapsSection.getKeys(false)) {
-                ConfigurationSection section = mapsSection.getConfigurationSection(mapId);
-                if (section == null) continue;
+        for (ConfigurationSection section : getConfigList(config, "maps")) {
+            String mapId = section.getString("id");
+            if (mapId == null || maps.containsKey(mapId)) continue;
 
-                String name = section.getString("name");
-                List<String> holograms = section.getStringList("holograms");
-                List<String> portals = section.getStringList("portals");
-                String file = section.getString("file");
-                if (file == null || file.isEmpty()) {
-                    file = mapId + ".schem";
-                }
-                Path schematicFile = mapsPath.resolve(file);
-
-                maps.put(mapId, new SougenMap.Config(mapId, name, schematicFile, holograms, portals));
-                hologramIds.addAll(holograms);
-                portalIds.addAll(portals);
+            String name = section.getString("name");
+            List<String> holograms = section.getStringList("holograms");
+            List<String> portals = section.getStringList("portals");
+            String file = section.getString("file");
+            if (file == null || file.isEmpty()) {
+                file = mapId + ".schem";
             }
+            Path schematicFile = mapsPath.resolve(file);
+
+            maps.put(mapId, new SougenMap.Config(mapId, name, schematicFile, holograms, portals));
+            hologramIds.addAll(holograms);
+            portalIds.addAll(portals);
         }
         return true;
     }
@@ -83,8 +83,16 @@ public class SougenConfig extends BukkitConfiguration {
         return center != null ? center : new BlockPosition(0, 60, 0);
     }
 
+    public @Nullable String getAutoMapId() {
+        return autoMapId;
+    }
+
     public Map<String, SougenMap.Config> getMaps() {
         return Collections.unmodifiableMap(maps);
+    }
+
+    public List<String> getMapIds() {
+        return new ArrayList<>(maps.keySet());
     }
 
     public Set<String> getAllHologramIds() {

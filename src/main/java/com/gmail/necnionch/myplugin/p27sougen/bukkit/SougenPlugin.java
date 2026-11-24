@@ -146,11 +146,27 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         Player player = event.getPlayer();
         SougenMap map = manager.getPlayerMap(player);
-        if (map != null && "test0".equals(map.id())) {
-//            manager.removePlayer(player, true);
-            manager.addPlayer(player, "test1", true);
+
+        List<String> ids = config.getMapIds();
+        if (ids.isEmpty())
+            return;
+
+        String mapId;
+        if (map == null) {
+            mapId = ids.getFirst();
         } else {
-            manager.addPlayer(player, "test0", true);
+            int index = ids.indexOf(map.id()) + 1;
+            if (ids.size() <= index && config.getAutoMapId() == null) {
+                mapId = null;
+            } else {
+                mapId = ids.get(index % ids.size());
+            }
+        }
+
+        if (mapId != null) {
+            manager.addPlayer(player, mapId, true);
+        } else {
+            manager.removePlayer(player, true);
         }
     }
 

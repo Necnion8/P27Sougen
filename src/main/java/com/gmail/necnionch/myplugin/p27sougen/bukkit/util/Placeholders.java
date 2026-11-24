@@ -4,6 +4,7 @@ import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenManager;
 import com.gmail.necnionch.myplugin.p27sougen.bukkit.sougen.SougenMap;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
@@ -82,13 +83,23 @@ public class Placeholders {
 
         @Override
         public @Nullable String onPlaceholderRequest(Player player, @NotNull String params) {
-            if (params.equals("map_current")) {
-                SougenMap map = manager.getPlayerMap(player);
-                return map != null ? map.id() : "";
-
-            } else if (params.equals("menu_is_scrolling")) {
-                return String.valueOf(Menus.isScrolling(player));
-
+            switch (params) {
+                case "map_current" -> {
+                    SougenMap map = manager.getPlayerMap(player);
+                    return map != null ? map.id() : "";
+                }
+                case "map_current_display" -> {
+                    SougenMap map = manager.getPlayerMap(player);
+                    if (map != null) {
+                        String name = Optional.ofNullable(map.config().name()).orElse(map.id());
+                        return ChatColor.translateAlternateColorCodes('&', name);
+                    } else {
+                        return "";
+                    }
+                }
+                case "menu_is_scrolling" -> {
+                    return String.valueOf(Menus.isScrolling(player));
+                }
             }
             return null;
         }
