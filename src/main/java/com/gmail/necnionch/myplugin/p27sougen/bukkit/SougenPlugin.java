@@ -56,6 +56,10 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
             getLogger().info("Placeholder API Hooked!");
             unregisters.add(handler);
         });
+        Menus.register(this).ifPresent(handler -> {
+            getLogger().info("Menu API Hooked!");
+            unregisters.add(handler);
+        });
     }
 
     @Override
@@ -113,6 +117,15 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
                 pdc.set(new NamespacedKey(this, "i"), PersistentDataType.STRING, "entity");
             });
             inv.addItem(itemStack);
+
+        } else if (args.length == 2 && "menu-left".equalsIgnoreCase(args[0])) {
+            Menus.playMenuScroll(this, (Player) sender, args[1], 0);
+        } else if (args.length == 2 && "menu-right".equalsIgnoreCase(args[0])) {
+            Menus.playMenuScroll(this, (Player) sender, args[1], 1);
+        } else if (args.length == 2 && "menu-up".equalsIgnoreCase(args[0])) {
+            Menus.playMenuScroll(this, (Player) sender, args[1], 2);
+        } else if (args.length == 2 && "menu-down".equalsIgnoreCase(args[0])) {
+            Menus.playMenuScroll(this, (Player) sender, args[1], 3);
         }
 
         return true;

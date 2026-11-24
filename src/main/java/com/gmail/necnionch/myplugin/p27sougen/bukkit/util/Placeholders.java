@@ -85,6 +85,10 @@ public class Placeholders {
             if (params.equals("map_current")) {
                 SougenMap map = manager.getPlayerMap(player);
                 return map != null ? map.id() : "";
+
+            } else if (params.equals("menu_is_scrolling")) {
+                return String.valueOf(Menus.isScrolling(player));
+
             }
             return null;
         }
