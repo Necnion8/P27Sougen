@@ -104,6 +104,16 @@ public class SougenManager implements Listener {
                 revertExclusiveBlocks(player, prevMap, map);
             }
             sendMap(player);
+            if (map != null) {
+                World mapWorld = plugin.getServer().getWorld(map.destWorldId());
+                if (mapWorld != null) {
+                    List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(mapWorld).stream()
+                            .map(mapWorld::getEntity)
+                            .filter(Objects::nonNull)
+                            .toList();
+                    updateEntityVisibility(player, mapId, taggedEntities, true);
+                }
+            }
         } else if (map != null) {
             playMapApplyAnimation(player, map, prevMap, DEFAULT_THICKNESS);
         }
@@ -188,7 +198,7 @@ public class SougenManager implements Listener {
                         .map(mapWorld::getEntity)
                         .filter(Objects::nonNull)
                         .toList();
-                updateEntityVisibility(player, mapId, taggedEntities, false);
+                updateEntityVisibility(player, null, taggedEntities, true);
             }
         }
         updateHologramsAndPortals(player);

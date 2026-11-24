@@ -152,12 +152,19 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
         event.setCancelled(true);
         Entity targetEntity = event.getRightClicked();
 
-        if (manager.getSougenEntityMapId(targetEntity) != null) {
+        String entityMapId = manager.getSougenEntityMapId(targetEntity);
+        if (entityMapId != null) {
             manager.removeSougenEntity(targetEntity.getWorld(), targetEntity);
-            player.sendMessage("Tag Removed");
+            player.sendMessage("Tag Removed: " + entityMapId);
         } else {
-            manager.addSougenEntity(targetEntity.getWorld(), targetEntity, "test");
-            player.sendMessage("Tag Added");
+            SougenMap map = manager.getPlayerMap(player);
+            if (map != null) {
+                String mapId = map.id();
+                manager.addSougenEntity(targetEntity.getWorld(), targetEntity, mapId);
+                player.sendMessage("Tag Added: " + mapId);
+            } else {
+                player.sendMessage("Not on the map");
+            }
         }
     }
 
