@@ -230,6 +230,16 @@ public class SougenManager implements Listener {
         return players.containsKey(player);
     }
 
+    public boolean containsPlayerInMap(Player player) {
+        SougenMap map = getPlayerMap(player);
+        if (map == null) return false;
+        return player.getWorld().getUID().equals(map.destWorldId());
+    }
+
+    public boolean containsPlayerInMapWorld(Player player) {
+        return player.getWorld().getName().equals(config.getWorld());
+    }
+
     public boolean containsBlock(Player player, BlockPosition blockPosition) {
         String mapId = players.get(player);
         if (mapId == null) return false;
@@ -354,37 +364,14 @@ public class SougenManager implements Listener {
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        World world = player.getWorld();
-
         PersistentDataContainer pdc = player.getPersistentDataContainer();
         String mapId = pdc.get(PDC_ENTITY_MAP_ID, PersistentDataType.STRING);
-
-        if (mapId == null) {
-            mapId = config.getAutoMapId();
-        }
 
         if (mapId != null) {
             players.put(player, mapId);
         }
 
-        sendMap(player);
-        updateHologramsAndPortals(player);
-        if (mapId == null) {
-            // sougenなし
-            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
-                    .map(world::getEntity)
-                    .filter(Objects::nonNull)
-                    .toList();
-            updateEntityVisibility(player, null, taggedEntities, true);
-            return;
-        }
-
-        SougenMap map = maps.get(mapId);
-        if (map == null) return;
-        if (!map.destWorldId().equals(player.getWorld().getUID())) return;
-
-        List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
-        updateEntityVisibility(player, mapId, taggedEntities, true);
+        handlePlayerChangedWorld(player);
     }
 
     @EventHandler
@@ -405,8 +392,7 @@ public class SougenManager implements Listener {
 
     @EventHandler
     public void onPlayerWorldChange(PlayerChangedWorldEvent event) {
-        cancelAllAnimations(event.getPlayer());
-        removePlayer(event.getPlayer(), false);
+        handlePlayerChangedWorld(event.getPlayer());
     }
 
     @EventHandler
@@ -419,6 +405,38 @@ public class SougenManager implements Listener {
 
         Chunk chunk = event.getChunk();
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> sendMap(player, new SougenMap.ChunkKey(chunk.getX(), chunk.getZ())), 1L);
+    }
+
+    private void handlePlayerChangedWorld(Player player) {
+        cancelAllAnimations(player);
+        World world = player.getWorld();
+
+        String mapId = players.get(player);
+        if (mapId == null) {
+            mapId = config.getAutoMapId();
+            if (mapId != null) {
+                players.put(player, mapId);
+            }
+        }
+
+        sendMap(player);
+        updateHologramsAndPortals(player);
+        if (mapId == null) {
+            // sougenなし
+            List<Entity> taggedEntities = loadTaggedEntitiesIdFrom(world).stream()
+                    .map(world::getEntity)
+                    .filter(Objects::nonNull)
+                    .toList();
+            updateEntityVisibility(player, null, taggedEntities, true);
+            return;
+        }
+
+        SougenMap map = maps.get(mapId);
+        if (map == null) return;
+        if (!map.destWorldId().equals(player.getWorld().getUID())) return;
+
+        List<Entity> taggedEntities = loadTaggedEntitiesFrom(world);
+        updateEntityVisibility(player, mapId, taggedEntities, true);
     }
 
     public record SougenBlockEntry(
