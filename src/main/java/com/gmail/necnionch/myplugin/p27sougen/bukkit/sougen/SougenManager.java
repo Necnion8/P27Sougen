@@ -53,7 +53,7 @@ public class SougenManager implements Listener {
     private static final float DEFAULT_THICKNESS = 2.0f;
     private static final BlockData STONE_BLOCK_DATA = Bukkit.createBlockData(Material.STONE);
     private static final BlockData AIR_BLOCK_DATA = Bukkit.createBlockData(Material.AIR);
-    private static final Set<Material> HEAD_MATERIALS = Arrays.stream(Material.values()).filter(m -> m.name().endsWith("_HEAD")).collect(Collectors.toSet());
+    private static final Set<Material> HEAD_MATERIALS = Arrays.stream(Material.values()).filter(m -> m.name().endsWith("_HEAD") || m.name().endsWith("_SKULL")).collect(Collectors.toSet());
     private static final Predicate<Material> IS_BLOCK_PREVIEW = type ->
             type.isCollidable() && Material.LILY_PAD != type && !HEAD_MATERIALS.contains(type);
 
@@ -276,6 +276,7 @@ public class SougenManager implements Listener {
             };
         }
         ProtocolLibrary.getProtocolManager().addPacketListener(packetListener);
+        startPortalProximityTask();
     }
 
     public void shutdown() {
@@ -287,6 +288,7 @@ public class SougenManager implements Listener {
     }
 
     private void clearAll() {
+        stopPortalProximityTasks();
         for (Player player : plugin.getServer().getOnlinePlayers()) {
             String mapId = players.get(player);
             if (mapId != null) {
@@ -882,5 +884,494 @@ public class SougenManager implements Listener {
             Portals.blockedNames().removeAll(player);
         }
     }
+
+    // --- Portal Proximity Reveal via Active Player ---
+
+    private static final String TEST_PORTAL_ID = "test_portal";
+
+    // ポータル本体範囲（y=62 から開始）
+    private static final BlockPosition PORTAL_MIN = new BlockPosition(118, 62, 50);
+    private static final BlockPosition PORTAL_MAX = new BlockPosition(122, 67, 50);
+
+    // 地面の高さと、距離に応じて広がる最大半径
+    private static final int GROUND_Y = 62;
+    private static final double GROUND_MAX_RADIUS = 4.0;
+
+    private static final double PORTAL_REVEAL_MAX_DIST = 2.0;
+    private static final double PORTAL_REVEAL_MIN_DIST = 1.0;
+    private static final double Y_DISTANCE_WEIGHT = 1.0 / 2.0;
+
+    // 徐々に離れた場合の遅延（tick）
+    private static final long PORTAL_REVERT_DELAY_TICKS = 10L;
+    private static final long PORTAL_REVERT_TOTAL_TICKS = 10L;
+
+    // 1 tick あたりの移動量がこの値以上なら「一気に離れた（ワープ等）」とみなす
+    private static final double ABRUPT_MOVE_DISTANCE_THRESHOLD = 3.5;
+
+    // 一気に離れた場合の遅延（tick）
+    private static final long ABRUPT_REVERT_DELAY_TICKS = 20 * 2L;
+    private static final long ABRUPT_REVERT_TOTAL_TICKS = 10L;
+
+    private @Nullable BukkitTask portalRevealTask;
+    private final Map<Player, Map<BlockPosition, BlockData>> revealedPortalBlocksByViewer = new HashMap<>();
+    private final Map<Player, Map<BlockPosition, BukkitTask>> pendingRevertTasksByViewer = new HashMap<>();
+
+    private final Map<UUID, Location> lastActorLocations = new HashMap<>();
+    private final Map<UUID, Double> lastActorProgress = new HashMap<>();
+    private final Set<UUID> previousVisibleActorIds = new HashSet<>();
+
+    private record ApproachEvaluation(double maxProgress, boolean departedAbruptly) {
+    }
+
+    public void startPortalProximityTask() {
+        stopPortalProximityTasks();
+
+        portalRevealTask = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            World world = Optional.ofNullable(config.getWorld())
+                    .map(name -> plugin.getServer().getWorld(name))
+                    .orElse(null);
+            if (world == null) return;
+
+            List<Player> worldPlayers = world.getPlayers().stream()
+                    .filter(Player::isOnline)
+                    .toList();
+            if (worldPlayers.isEmpty()) return;
+
+            @Nullable SougenMap portalSourceMap = findPortalSourceMap(world, TEST_PORTAL_ID);
+            if (portalSourceMap == null) return;
+
+            List<BlockPosition> portalBlocks = collectBlockPositions(PORTAL_MIN, PORTAL_MAX);
+
+            double portalCenterX = (PORTAL_MIN.x() + PORTAL_MAX.x() + 1) / 2.0;
+            double portalCenterY = (PORTAL_MIN.y() + PORTAL_MAX.y() + 1) / 2.0;
+            double portalCenterZ = (PORTAL_MIN.z() + PORTAL_MAX.z() + 1) / 2.0;
+            Location portalCenter = new Location(world, portalCenterX, portalCenterY, portalCenterZ);
+
+            // 1. Aマップ側の接近状況（最大進行度と、一気に離れたか）を評価
+            ApproachEvaluation approach = evaluateActorApproach(world, worldPlayers, portalBlocks);
+            double progress = approach.maxProgress();
+            boolean departedAbruptly = approach.departedAbruptly();
+
+            // 2. ポータル本体 + 距離に応じた地面（y = GROUND_Y）の BlockData マップを構築
+            Map<BlockPosition, BlockData> targetBlockDataMap = buildTargetBlockDataMap(
+                    portalSourceMap,
+                    world,
+                    portalCenterX,
+                    portalCenterZ,
+                    progress
+            );
+
+            List<BlockPosition> sortedTargets = getPositionsSortedByCenter(targetBlockDataMap.keySet(), portalCenter);
+
+            // 3. ポータルが見えていない側（Bマップなど）に反映
+            for (Player viewer : worldPlayers) {
+                if (isPortalVisibleToPlayer(viewer, TEST_PORTAL_ID)) {
+                    resetPortalPreview(viewer, world, false, departedAbruptly);
+                    continue;
+                }
+                updatePortalPreviewForViewer(
+                        viewer,
+                        world,
+                        sortedTargets,
+                        portalCenter,
+                        targetBlockDataMap,
+                        progress,
+                        departedAbruptly
+                );
+            }
+        }, 3L, 3L);
+    }
+
+    private void stopPortalProximityTasks() {
+        if (portalRevealTask != null) {
+            portalRevealTask.cancel();
+            portalRevealTask = null;
+        }
+
+        for (Player viewer : new ArrayList<>(revealedPortalBlocksByViewer.keySet())) {
+            resetPortalPreview(viewer, viewer.getWorld(), true, true);
+        }
+        revealedPortalBlocksByViewer.clear();
+        cancelAllPendingReverts();
+        lastActorLocations.clear();
+        lastActorProgress.clear();
+        previousVisibleActorIds.clear();
+    }
+
+    private ApproachEvaluation evaluateActorApproach(
+            World world,
+            List<Player> worldPlayers,
+            List<BlockPosition> portalBlocks
+    ) {
+        double maxProgress = 0.0;
+        boolean departedAbruptly = false;
+        Set<UUID> currentVisibleActorIds = new HashSet<>();
+
+        for (Player actor : worldPlayers) {
+            if (!isPortalVisibleToPlayer(actor, TEST_PORTAL_ID)) continue;
+
+            UUID uuid = actor.getUniqueId();
+            currentVisibleActorIds.add(uuid);
+
+            Location currLoc = actor.getLocation();
+            double dist = calculateNearestPortalDistance(currLoc, portalBlocks);
+            double currProgress = calculateRevealProgress(dist);
+            maxProgress = Math.max(maxProgress, currProgress);
+
+            Location prevLoc = lastActorLocations.get(uuid);
+            double prevProgress = lastActorProgress.getOrDefault(uuid, 0.0);
+
+            if (prevLoc != null && prevProgress > 0.15 && currProgress < prevProgress) {
+                if (prevLoc.getWorld() == null || !prevLoc.getWorld().getUID().equals(world.getUID())) {
+                    departedAbruptly = true;
+                } else if (prevLoc.distance(currLoc) >= ABRUPT_MOVE_DISTANCE_THRESHOLD) {
+                    departedAbruptly = true;
+                }
+            }
+
+            lastActorLocations.put(uuid, currLoc.clone());
+            lastActorProgress.put(uuid, currProgress);
+        }
+
+        for (UUID prevId : previousVisibleActorIds) {
+            if (!currentVisibleActorIds.contains(prevId)) {
+                double prevProgress = lastActorProgress.getOrDefault(prevId, 0.0);
+                if (prevProgress > 0.15) {
+                    departedAbruptly = true;
+                }
+            }
+        }
+
+        previousVisibleActorIds.clear();
+        previousVisibleActorIds.addAll(currentVisibleActorIds);
+        lastActorLocations.keySet().retainAll(currentVisibleActorIds);
+        lastActorProgress.keySet().retainAll(currentVisibleActorIds);
+
+        return new ApproachEvaluation(maxProgress, departedAbruptly);
+    }
+
+    private void updatePortalPreviewForViewer(
+            Player viewer,
+            World world,
+            List<BlockPosition> sortedTargetsFromCenter,
+            Location portalCenter,
+            Map<BlockPosition, BlockData> portalBlockDataMap,
+            double progress,
+            boolean departedAbruptly
+    ) {
+        int targetCount = (int) Math.round(sortedTargetsFromCenter.size() * progress);
+        Set<BlockPosition> desiredPositions = new HashSet<>(
+                sortedTargetsFromCenter.subList(0, Math.min(targetCount, sortedTargetsFromCenter.size()))
+        );
+        Map<BlockPosition, BlockData> previousRevealed = revealedPortalBlocksByViewer.computeIfAbsent(viewer, _ -> new HashMap<>());
+
+        Map<BlockPosition, BlockData> toShow = new HashMap<>();
+        for (BlockPosition bp : desiredPositions) {
+            cancelPendingRevert(viewer, bp);
+
+            if (!previousRevealed.containsKey(bp)) {
+                BlockData data = portalBlockDataMap.get(bp);
+                if (data != null) {
+                    toShow.put(bp, data);
+                    previousRevealed.put(bp, data);
+                }
+            }
+        }
+
+        if (!toShow.isEmpty()) {
+            //noinspection UnstableApiUsage
+            viewer.sendMultiBlockChange(BlockPosition.mapToPaper(toShow));
+        }
+
+        List<BlockPosition> removedPositions = previousRevealed.keySet().stream()
+                .filter(bp -> !desiredPositions.contains(bp))
+                .sorted(Comparator
+                        .comparingInt(BlockPosition::y).reversed()
+                        .thenComparing(Comparator.comparingDouble((BlockPosition bp) -> distanceSqToCenter(bp, portalCenter)).reversed()))
+                .toList();
+
+        long baseDelay = departedAbruptly ? ABRUPT_REVERT_DELAY_TICKS : PORTAL_REVERT_DELAY_TICKS;
+        long totalTicks = departedAbruptly ? ABRUPT_REVERT_TOTAL_TICKS : PORTAL_REVERT_TOTAL_TICKS;
+
+        int count = removedPositions.size();
+        for (int i = 0; i < count; i++) {
+            BlockPosition pos = removedPositions.get(i);
+            long spreadTicks = (count <= 1)
+                    ? 0L
+                    : Math.round((totalTicks * i) / (double) (count - 1));
+            BlockData shownData = previousRevealed.get(pos);
+            scheduleRevertBlock(viewer, world, pos, shownData, baseDelay + spreadTicks);
+        }
+    }
+
+    private void scheduleRevertBlock(
+            Player viewer,
+            World world,
+            BlockPosition pos,
+            @Nullable BlockData previousShownData,
+            long delayTicks
+    ) {
+        Map<BlockPosition, BukkitTask> tasks = pendingRevertTasksByViewer.computeIfAbsent(viewer, _ -> new HashMap<>());
+        if (tasks.containsKey(pos)) {
+            return;
+        }
+
+        BukkitTask task = plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            Map<BlockPosition, BukkitTask> viewerTasks = pendingRevertTasksByViewer.get(viewer);
+            if (viewerTasks != null) {
+                viewerTasks.remove(pos);
+                if (viewerTasks.isEmpty()) {
+                    pendingRevertTasksByViewer.remove(viewer);
+                }
+            }
+
+            Map<BlockPosition, BlockData> currentRevealed = revealedPortalBlocksByViewer.get(viewer);
+            if (currentRevealed != null) {
+                currentRevealed.remove(pos);
+                if (currentRevealed.isEmpty()) {
+                    revealedPortalBlocksByViewer.remove(viewer);
+                }
+            }
+
+            if (!viewer.isOnline() || !viewer.getWorld().getUID().equals(world.getUID())) {
+                return;
+            }
+
+            BlockData viewerMapData = getViewerMapBlockData(viewer, world, pos);
+            BlockData revertedToData;
+            if (viewerMapData != null) {
+                //noinspection UnstableApiUsage
+                viewer.sendMultiBlockChange(BlockPosition.mapToPaper(Map.of(pos, viewerMapData)));
+                revertedToData = viewerMapData;
+            } else {
+                BlockState state = world.getBlockState(pos.x(), pos.y(), pos.z());
+                viewer.sendBlockChanges(List.of(state));
+                revertedToData = state.getBlockData();
+            }
+
+            if (revertedToData.getMaterial().isAir()
+                    && previousShownData != null
+                    && !previousShownData.getMaterial().isAir()) {
+                viewer.spawnParticle(
+                        Particle.BLOCK,
+                        pos.x() + 0.5,
+                        pos.y() + 0.5,
+                        pos.z() + 0.5,
+                        12,
+                        0.25,
+                        0.25,
+                        0.25,
+                        0.05,
+                        previousShownData
+                );
+            }
+        }, Math.max(0L, delayTicks));
+
+        tasks.put(pos, task);
+    }
+
+    private void resetPortalPreview(Player viewer, World world, boolean immediate, boolean departedAbruptly) {
+        cancelAllPendingRevertsForViewer(viewer);
+
+        Map<BlockPosition, BlockData> previousRevealed = revealedPortalBlocksByViewer.remove(viewer);
+        if (previousRevealed == null || previousRevealed.isEmpty()) return;
+        if (!viewer.isOnline() || !viewer.getWorld().getUID().equals(world.getUID())) return;
+
+        if (immediate) {
+            Map<BlockPosition, BlockData> mapBlocksToRestore = new HashMap<>();
+            List<BlockState> worldBlocksToRestore = new ArrayList<>();
+
+            for (BlockPosition bp : previousRevealed.keySet()) {
+                BlockData viewerMapData = getViewerMapBlockData(viewer, world, bp);
+                if (viewerMapData != null) {
+                    mapBlocksToRestore.put(bp, viewerMapData);
+                } else {
+                    worldBlocksToRestore.add(world.getBlockState(bp.x(), bp.y(), bp.z()));
+                }
+            }
+
+            if (!mapBlocksToRestore.isEmpty()) {
+                //noinspection UnstableApiUsage
+                viewer.sendMultiBlockChange(BlockPosition.mapToPaper(mapBlocksToRestore));
+            }
+            if (!worldBlocksToRestore.isEmpty()) {
+                viewer.sendBlockChanges(worldBlocksToRestore);
+            }
+        } else {
+            long baseDelay = departedAbruptly ? ABRUPT_REVERT_DELAY_TICKS : PORTAL_REVERT_DELAY_TICKS;
+            for (Map.Entry<BlockPosition, BlockData> entry : previousRevealed.entrySet()) {
+                scheduleRevertBlock(viewer, world, entry.getKey(), entry.getValue(), baseDelay);
+            }
+        }
+    }
+
+    private void cancelAllPendingReverts() {
+        for (Map<BlockPosition, BukkitTask> tasks : pendingRevertTasksByViewer.values()) {
+            for (BukkitTask task : tasks.values()) {
+                if (task != null) {
+                    task.cancel();
+                }
+            }
+        }
+        pendingRevertTasksByViewer.clear();
+    }
+
+    private void cancelPendingRevert(Player viewer, BlockPosition pos) {
+        Map<BlockPosition, BukkitTask> tasks = pendingRevertTasksByViewer.get(viewer);
+        if (tasks == null) return;
+        BukkitTask task = tasks.remove(pos);
+        if (task != null) {
+            task.cancel();
+        }
+        if (tasks.isEmpty()) {
+            pendingRevertTasksByViewer.remove(viewer);
+        }
+    }
+
+    private void cancelAllPendingRevertsForViewer(Player viewer) {
+        Map<BlockPosition, BukkitTask> tasks = pendingRevertTasksByViewer.remove(viewer);
+        if (tasks == null) return;
+        for (BukkitTask task : tasks.values()) {
+            if (task != null) {
+                task.cancel();
+            }
+        }
+    }
+
+    private Map<BlockPosition, BlockData> buildTargetBlockDataMap(
+            SougenMap sourceMap,
+            World world,
+            double portalCenterX,
+            double portalCenterZ,
+            double progress
+    ) {
+        Map<BlockPosition, BlockData> schematicIndexMap = buildSchematicBlockMap(sourceMap.schematic());
+
+        Set<BlockPosition> candidatePositions = new LinkedHashSet<>(collectBlockPositions(PORTAL_MIN, PORTAL_MAX));
+
+        double currentGroundRadius = GROUND_MAX_RADIUS * progress;
+        if (currentGroundRadius > 0.0) {
+            int ceilR = (int) Math.ceil(currentGroundRadius);
+            int baseX = (int) Math.floor(portalCenterX);
+            int baseZ = (int) Math.floor(portalCenterZ);
+            double radiusSq = currentGroundRadius * currentGroundRadius;
+
+            for (int x = baseX - ceilR; x <= baseX + ceilR; x++) {
+                for (int z = baseZ - ceilR; z <= baseZ + ceilR; z++) {
+                    double dx = (x + 0.5) - portalCenterX;
+                    double dz = (z + 0.5) - portalCenterZ;
+                    if (dx * dx + dz * dz <= radiusSq) {
+                        candidatePositions.add(new BlockPosition(x, GROUND_Y, z));
+                    }
+                }
+            }
+        }
+
+        Map<BlockPosition, BlockData> result = new LinkedHashMap<>();
+        for (BlockPosition bp : candidatePositions) {
+            BlockData data = schematicIndexMap.get(bp);
+            if (data != null && !data.getMaterial().isAir()) {
+                result.put(bp, data);
+            } else {
+                BlockData worldData = world.getBlockData(bp.x(), bp.y(), bp.z());
+                if (!worldData.getMaterial().isAir()) {
+                    result.put(bp, worldData);
+                }
+            }
+        }
+        return result;
+    }
+
+    private Map<BlockPosition, BlockData> buildSchematicBlockMap(SougenSchematic schematic) {
+        List<BlockPosition> posList = schematic.positionList();
+        List<BlockData> dataList = schematic.blockDataList();
+        Map<BlockPosition, BlockData> indexMap = new HashMap<>();
+        int size = Math.min(posList.size(), dataList.size());
+        for (int i = 0; i < size; i++) {
+            indexMap.put(posList.get(i), dataList.get(i));
+        }
+        return indexMap;
+    }
+
+    private @Nullable BlockData getViewerMapBlockData(Player viewer, World world, BlockPosition pos) {
+        SougenMap viewerMap = Optional.ofNullable(players.get(viewer)).map(maps::get).orElse(null);
+        if (viewerMap == null || !viewerMap.destWorldId().equals(world.getUID())) {
+            return null;
+        }
+        Map<BlockPosition, BlockData> viewerMapBlocks = buildSchematicBlockMap(viewerMap.schematic());
+        return viewerMapBlocks.get(pos);
+    }
+
+    private double calculateNearestPortalDistance(Location playerLoc, List<BlockPosition> portalBlocks) {
+        double minDistSq = Double.MAX_VALUE;
+        double px = playerLoc.getX();
+        double py = playerLoc.getY();
+        double pz = playerLoc.getZ();
+
+        for (BlockPosition bp : portalBlocks) {
+            double dx = px - (bp.x() + 0.5);
+            double dy = (py - (bp.y() + 0.5)) * Y_DISTANCE_WEIGHT;
+            double dz = pz - (bp.z() + 0.5);
+            double distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+            }
+        }
+        return minDistSq == Double.MAX_VALUE ? Double.MAX_VALUE : Math.sqrt(minDistSq);
+    }
+
+    private List<BlockPosition> collectBlockPositions(BlockPosition min, BlockPosition max) {
+        int minX = Math.min(min.x(), max.x());
+        int maxX = Math.max(min.x(), max.x());
+        int minY = Math.min(min.y(), max.y());
+        int maxY = Math.max(min.y(), max.y());
+        int minZ = Math.min(min.z(), max.z());
+        int maxZ = Math.max(min.z(), max.z());
+
+        List<BlockPosition> list = new ArrayList<>();
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    list.add(new BlockPosition(x, y, z));
+                }
+            }
+        }
+        return list;
+    }
+
+    private @Nullable SougenMap findPortalSourceMap(World world, String portalId) {
+        for (SougenMap map : maps.values()) {
+            if (!map.destWorldId().equals(world.getUID())) continue;
+            if (map.config().portalIds().contains(portalId)) {
+                return map;
+            }
+        }
+        return null;
+    }
+
+    private boolean isPortalVisibleToPlayer(Player player, String portalId) {
+        SougenMap currentMap = Optional.ofNullable(players.get(player)).map(maps::get).orElse(null);
+        return currentMap != null && currentMap.config().portalIds().contains(portalId);
+    }
+
+    private double calculateRevealProgress(double distance) {
+        if (distance >= PORTAL_REVEAL_MAX_DIST) return 0.0;
+        if (distance <= PORTAL_REVEAL_MIN_DIST) return 1.0;
+        return (PORTAL_REVEAL_MAX_DIST - distance) / (PORTAL_REVEAL_MAX_DIST - PORTAL_REVEAL_MIN_DIST);
+    }
+
+    private double distanceSqToCenter(BlockPosition bp, Location center) {
+        return Math.pow(bp.x() + 0.5 - center.getX(), 2)
+                + Math.pow(bp.y() + 0.5 - center.getY(), 2)
+                + Math.pow(bp.z() + 0.5 - center.getZ(), 2);
+    }
+
+    private List<BlockPosition> getPositionsSortedByCenter(Set<BlockPosition> candidates, Location portalCenter) {
+        List<BlockPosition> list = new ArrayList<>(candidates);
+        list.sort(Comparator.comparingDouble(bp -> distanceSqToCenter(bp, portalCenter)));
+        return list;
+    }
+
+
 
 }
