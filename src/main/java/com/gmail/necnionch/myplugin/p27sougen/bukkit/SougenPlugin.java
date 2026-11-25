@@ -60,6 +60,10 @@ public final class SougenPlugin extends JavaPlugin implements Listener {
             getLogger().info("Menu API Hooked!");
             unregisters.add(handler);
         });
+        Chairs.register(this, config, manager).ifPresent(handler -> {
+            getLogger().info("Chair API Hooked!");
+            unregisters.add(handler);
+        });
     }
 
     @Override

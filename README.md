@@ -10,3 +10,4 @@
 - [BungeePortals2](https://github.com/Necnion8/BungeePortal2) (オプション。ビルド: 1.1.1)
 - [PlaceholderAPI](https://github.com/PlaceholderAPI/PlaceholderAPI) (オプション。ビルド: 2.12.3)
 - [DeluxeMenus](https://github.com/HelpChat/DeluxeMenus) (オプション。ビルド: 1.14.1)
+- [RifleChairs](https://github.com/ShinyDeagle/RFChairs) (オプション。ビルド: 6.0)

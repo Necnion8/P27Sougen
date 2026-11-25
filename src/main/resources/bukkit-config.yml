@@ -5,6 +5,9 @@ location: 0,60,0,lobby
 # マップ未指定のプレイヤーにマップを自動設定します (null でマップ未指定を許容します)
 auto-map: test
 
+# マップ上にのみ存在する椅子ブロックにも座れるようにします
+chairs: true
+
 maps:
   - id: test
     name: "テスト"

@@ -250,6 +250,18 @@ public class SougenManager implements Listener {
         return map.schematic().positionList().contains(blockPosition);
     }
 
+    public @Nullable BlockData getBlockDataInMap(Player player, BlockPosition blockPosition) {
+        String mapId = players.get(player);
+        if (mapId == null) return null;
+
+        SougenMap map = maps.get(mapId);
+        if (map == null) return null;
+
+        int index = map.schematic().positionList().indexOf(blockPosition);
+        if (index == -1) return null;
+        return map.schematic().blockDataList().get(index);
+    }
+
     // --- Lifecycle / Events ---
 
     public void setup() {

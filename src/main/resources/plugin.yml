@@ -16,6 +16,7 @@ softdepend:
   - BungeePortals2
   - PlaceholderAPI
   - DeluxeMenus
+  - RFChairs
 
 commands:
   sougen:

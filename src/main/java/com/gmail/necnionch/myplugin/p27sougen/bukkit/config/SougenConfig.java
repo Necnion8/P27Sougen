@@ -16,6 +16,7 @@ public class SougenConfig extends BukkitConfiguration {
     private @Nullable String world;
     private @Nullable BlockPosition center;
     private @Nullable String autoMapId;
+    private boolean chairs;
     private final Map<String, SougenMap.Config> maps = new LinkedHashMap<>();
     private final Set<String> hologramIds = new HashSet<>();
     private final Set<String> portalIds = new HashSet<>();
@@ -26,9 +27,6 @@ public class SougenConfig extends BukkitConfiguration {
 
     @Override
     protected boolean onLoaded() {
-        world = null;
-        center = null;
-        autoMapId = null;
         maps.clear();
         hologramIds.clear();
         portalIds.clear();
@@ -54,6 +52,7 @@ public class SougenConfig extends BukkitConfiguration {
         }
         center =  new BlockPosition(centerX, centerY, centerZ);
         autoMapId = config.getString("auto-map");
+        chairs = config.getBoolean("chairs", true);
 
         for (ConfigurationSection section : getConfigList(config, "maps")) {
             String mapId = section.getString("id");
@@ -85,6 +84,10 @@ public class SougenConfig extends BukkitConfiguration {
 
     public @Nullable String getAutoMapId() {
         return autoMapId;
+    }
+
+    public boolean isChairs() {
+        return chairs;
     }
 
     public Map<String, SougenMap.Config> getMaps() {
